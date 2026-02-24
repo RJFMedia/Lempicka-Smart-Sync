@@ -8,21 +8,21 @@
   </head>
   <body>
     <main class="app">
-      <h1>lempicka smart sync</h1>
+      <h1>Lempicka Smart Sync</h1>
 
       <section class="paths">
         <div class="path-row">
-          <label for="leftPath">Left tree (versioned files)</label>
+          <label for="leftPath">Source Directory (versioned)</label>
           <div class="path-input-wrap">
-            <input id="leftPath" type="text" placeholder="Choose left directory" readonly />
+            <input id="leftPath" type="text" placeholder="Choose source directory" readonly />
             <button id="pickLeft">Browse</button>
           </div>
         </div>
 
         <div class="path-row">
-          <label for="rightPath">Right tree (target files)</label>
+          <label for="rightPath">Destination Directory (unversioned)</label>
           <div class="path-input-wrap">
-            <input id="rightPath" type="text" placeholder="Choose right directory" readonly />
+            <input id="rightPath" type="text" placeholder="Choose destination directory" readonly />
             <button id="pickRight">Browse</button>
           </div>
         </div>
@@ -40,41 +40,59 @@
 
       <section class="results">
         <h2>Files to Replace</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Target Relative Path</th>
-              <th>Source File</th>
-              <th>Version</th>
-              <th>Source Bytes</th>
-              <th>Existing Bytes</th>
-            </tr>
-          </thead>
-          <tbody id="resultsBody">
-            <tr>
-              <td colspan="5" class="empty">No comparison run yet.</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table class="compare-table">
+            <colgroup>
+              <col class="col-source" />
+              <col class="col-destination" />
+              <col class="col-version" />
+              <col class="col-size" />
+              <col class="col-size" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Source Relative Path</th>
+                <th>Destination Relative Path</th>
+                <th>Version</th>
+                <th>Source Bytes</th>
+                <th>Existing Bytes</th>
+              </tr>
+            </thead>
+            <tbody id="resultsBody">
+              <tr>
+                <td colspan="5" class="empty">No comparison run yet.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section class="results">
-        <h2>Sync History</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Left Directory</th>
-              <th>Right Directory</th>
-              <th>Copied</th>
-            </tr>
-          </thead>
-          <tbody id="historyBody">
-            <tr>
-              <td colspan="4" class="empty">No syncs have been recorded yet.</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="results-header">
+          <h2>Sync History</h2>
+          <button id="clearHistoryBtn" type="button">Clear History</button>
+        </div>
+        <div class="table-scroll">
+          <table class="history-table">
+            <colgroup>
+              <col class="col-time" />
+              <col class="col-source" />
+              <col class="col-destination" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Source Relative Path</th>
+                <th>Destination Relative Path</th>
+              </tr>
+            </thead>
+            <tbody id="historyBody">
+              <tr>
+                <td colspan="3" class="empty">No syncs have been recorded yet.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
     </main>
 
