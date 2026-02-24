@@ -28,7 +28,10 @@ async function loadState(filePath) {
   try {
     const raw = await fs.readFile(filePath, 'utf8');
     const parsed = JSON.parse(raw);
-    return normalizeState(parsed);
+    return normalizeState({
+      selectedDirs: parsed && parsed.selectedDirs ? parsed.selectedDirs : {},
+      syncHistory: [],
+    });
   } catch (error) {
     if (error.code === 'ENOENT') {
       return { ...DEFAULT_STATE };
@@ -39,8 +42,11 @@ async function loadState(filePath) {
 
 async function saveState(filePath, state) {
   const normalized = normalizeState(state);
+  const persistable = {
+    selectedDirs: normalized.selectedDirs,
+  };
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(normalized, null, 2), 'utf8');
+  await fs.writeFile(filePath, JSON.stringify(persistable, null, 2), 'utf8');
   return normalized;
 }
 
@@ -65,12 +71,37 @@ function appendSyncHistory(state, historyItem) {
     copied: Number(historyItem.copied) || 0,
     total: Number(historyItem.total) || 0,
     files: Array.isArray(historyItem.files)
-      ? historyItem.files.filter((value) => typeof value === 'string').slice(0, 1000)
+      ? historyItem.files
+          .map((value) => {
+            if (typeof value === 'string') {
+              return {
+                sourceRelativePath: '',
+                targetRelativePath: value,
+              };
+            }
+            if (!value || typeof value !== 'object') {
+              return null;
+            }
+            return {
+              sourceRelativePath:
+                typeof value.sourceRelativePath === 'string' ? value.sourceRelativePath : '',
+              targetRelativePath:
+                typeof value.targetRelativePath === 'string' ? value.targetRelativePath : '',
+            };
+          })
+          .filter((value) => value && (value.sourceRelativePath || value.targetRelativePath))
+          .slice(0, 1000)
       : [],
   };
 
   next.syncHistory = [entry, ...next.syncHistory].slice(0, MAX_HISTORY_ITEMS);
   return { nextState: next, entry };
+}
+
+function clearSyncHistory(state) {
+  const next = normalizeState(state);
+  next.syncHistory = [];
+  return next;
 }
 
 module.exports = {
@@ -79,4 +110,5 @@ module.exports = {
   normalizeState,
   updateSelectedDirs,
   appendSyncHistory,
+  clearSyncHistory,
 };

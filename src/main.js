@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, nativeImage, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { buildComparePlan, syncPlan: runSyncPlan } = require('./core/sync');
@@ -8,11 +8,15 @@ const {
   normalizeState,
   updateSelectedDirs,
   appendSyncHistory,
+  clearSyncHistory,
 } = require('./main/state-store');
 
 let stateFilePath = null;
 let appState = normalizeState({});
 const appIconPath = path.join(__dirname, 'renderer', 'img', 'lempicka-icon.png');
+app.setName('Lempicka Smart Sync');
+app.name = 'Lempicka Smart Sync';
+let windowContentWidth = 1100;
 
 async function persistState() {
   if (!stateFilePath) {
@@ -23,10 +27,21 @@ async function persistState() {
 }
 
 function createWindow() {
+  const workArea = screen.getPrimaryDisplay().workAreaSize;
+  windowContentWidth = Math.min(1320, Math.max(960, workArea.width - 20));
+  const initialHeight = Math.min(Math.max(760, 600), workArea.height - 40);
+
   const windowOptions = {
-    title: 'Lempicka Smart Sync',
-    width: 1100,
-    height: 760,
+    title: '',
+    useContentSize: true,
+    width: windowContentWidth,
+    minWidth: windowContentWidth,
+    maxWidth: windowContentWidth,
+    height: initialHeight,
+    minHeight: 500,
+    maxHeight: workArea.height - 20,
+    resizable: false,
+    fullscreenable: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -46,7 +61,6 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  app.setName('Lempicka Smart Sync');
   if (process.platform === 'darwin' && fs.existsSync(appIconPath)) {
     app.dock.setIcon(nativeImage.createFromPath(appIconPath));
   }
@@ -90,9 +104,60 @@ ipcMain.handle('get-app-state', async () => {
   return appState;
 });
 
+ipcMain.handle('clear-sync-history', async () => {
+  appState = clearSyncHistory(appState);
+  await persistState();
+  return { cleared: true };
+});
+
+ipcMain.handle('set-window-content-height', (event, contentHeight) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) {
+    return null;
+  }
+
+  const display = screen.getDisplayMatching(win.getBounds());
+  const maxHeight = Math.max(500, display.workAreaSize.height - 20);
+  const requested = Number(contentHeight);
+  if (!Number.isFinite(requested)) {
+    return null;
+  }
+
+  const targetHeight = Math.max(500, Math.min(maxHeight, Math.ceil(requested)));
+  const [, currentContentHeight] = win.getContentSize();
+  if (Math.abs(currentContentHeight - targetHeight) < 2) {
+    return targetHeight;
+  }
+
+  win.setContentSize(windowContentWidth, targetHeight);
+  return targetHeight;
+});
+
+ipcMain.handle('get-window-size-limits', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) {
+    return { minContentHeight: 500, maxContentHeight: 800 };
+  }
+
+  const display = screen.getDisplayMatching(win.getBounds());
+  const maxContentHeight = Math.max(500, display.workAreaSize.height - 20);
+  return {
+    minContentHeight: 500,
+    maxContentHeight,
+  };
+});
+
 ipcMain.handle('set-selected-directories', async (_, payload) => {
   appState = updateSelectedDirs(appState, payload || {});
-  await persistState();
+  try {
+    await persistState();
+  } catch (error) {
+    console.error('Failed to persist selected directories:', error);
+    return {
+      ...appState.selectedDirs,
+      warning: 'Failed to persist selected directories.',
+    };
+  }
   return appState.selectedDirs;
 });
 
@@ -106,25 +171,44 @@ ipcMain.handle('compare-trees', async (_, payload) => {
 });
 
 ipcMain.handle('sync-plan', async (event, payload) => {
-  const { plan, leftRoot, rightRoot } = payload || {};
-  const result = await runSyncPlan(plan, (progress) => {
-    event.sender.send('sync-progress', progress);
-  });
+  const { plan, leftRoot, rightRoot, directoriesToCreate } = payload || {};
+  const result = await runSyncPlan(
+    plan,
+    (progress) => {
+      event.sender.send('sync-progress', progress);
+    },
+    { leftRoot, rightRoot, directoriesToCreate }
+  );
 
-  const { nextState, entry } = appendSyncHistory(appState, {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    timestamp: new Date().toISOString(),
-    leftRoot: typeof leftRoot === 'string' ? leftRoot : '',
-    rightRoot: typeof rightRoot === 'string' ? rightRoot : '',
-    copied: result.copied,
-    total: result.total,
-    files: Array.isArray(plan) ? plan.map((item) => item.targetRelativePath) : [],
-  });
-  appState = nextState;
-  await persistState();
+  let logEntry = null;
+  let warning = null;
+
+  try {
+    const appended = appendSyncHistory(appState, {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: new Date().toISOString(),
+      leftRoot: typeof leftRoot === 'string' ? leftRoot : '',
+      rightRoot: typeof rightRoot === 'string' ? rightRoot : '',
+      copied: result.copied,
+      total: result.total,
+      files: Array.isArray(plan)
+        ? plan.map((item) => ({
+            sourceRelativePath: item.sourceRelativePath,
+            targetRelativePath: item.targetRelativePath,
+          }))
+        : [],
+    });
+    appState = appended.nextState;
+    logEntry = appended.entry;
+    await persistState();
+  } catch (error) {
+    console.error('Sync succeeded but failed to persist sync history:', error);
+    warning = 'Sync completed, but history could not be saved.';
+  }
 
   return {
     ...result,
-    logEntry: entry,
+    logEntry,
+    warning,
   };
 });

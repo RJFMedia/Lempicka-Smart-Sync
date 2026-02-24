@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Lempicka Smart Sync"
 BUNDLE_ID="com.lempicka.smartsync"
+VERSION="$(node -p "require('$ROOT_DIR/package.json').version")"
 DIST_DIR="$ROOT_DIR/dist"
 BUILD_DIR="$ROOT_DIR/build"
 SRC_ELECTRON_APP="$ROOT_DIR/node_modules/electron/dist/Electron.app"
@@ -50,6 +51,8 @@ set_or_add_plist_value "CFBundleExecutable" "string" "$APP_NAME"
 set_or_add_plist_value "CFBundleIdentifier" "string" "$BUNDLE_ID"
 set_or_add_plist_value "CFBundleIconFile" "string" "icon.icns"
 set_or_add_plist_value "CFBundleIconName" "string" "icon"
+set_or_add_plist_value "CFBundleShortVersionString" "string" "$VERSION"
+set_or_add_plist_value "CFBundleVersion" "string" "$VERSION"
 
 APP_CONTENT_DIR="$RES_DIR/app"
 rm -rf "$APP_CONTENT_DIR"
@@ -57,7 +60,6 @@ mkdir -p "$APP_CONTENT_DIR"
 
 cp -R "$ROOT_DIR/src" "$APP_CONTENT_DIR/src"
 
-VERSION="$(node -p "require('$ROOT_DIR/package.json').version")"
 cat > "$APP_CONTENT_DIR/package.json" <<EOF
 {
   "name": "lempicka-smart-sync",
