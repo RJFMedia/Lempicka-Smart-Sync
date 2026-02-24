@@ -202,3 +202,26 @@ test('buildComparePlan ignores sync-history.log', async () => {
     assert.equal(result.plan[0].targetRelativePath, 'real.txt');
   });
 });
+
+test('syncPlan restores original destination file when cancelled during replacement', async () => {
+  await withTempDirs(async ({ left, right }) => {
+    const largeContent = Buffer.alloc(8 * 1024 * 1024, 'a');
+    await writeFile(left, 'clip_v2.txt', largeContent);
+    await writeFile(right, 'clip.txt', 'old-destination-content');
+
+    const compare = await buildComparePlan(left, right);
+    let cancelRequested = false;
+
+    await assert.rejects(
+      () => syncPlan(compare.plan, () => {
+        cancelRequested = true;
+      }, {
+        shouldCancel: () => cancelRequested,
+      }),
+      /cancelled/i
+    );
+
+    const restored = await fs.readFile(path.join(right, 'clip.txt'), 'utf8');
+    assert.equal(restored, 'old-destination-content');
+  });
+});

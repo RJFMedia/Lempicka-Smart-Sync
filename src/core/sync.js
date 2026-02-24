@@ -153,7 +153,7 @@ async function tryPreserveCreationDate(sourcePath, targetPath) {
   }
 }
 
-async function copyFileWithProgress(sourcePath, targetPath, onChunk, writeFlags = 'w') {
+async function copyFileWithProgress(sourcePath, targetPath, onChunk, writeFlags = 'w', shouldCancel) {
   await new Promise((resolve, reject) => {
     const input = createReadStream(sourcePath);
     const output = createWriteStream(targetPath, { flags: writeFlags });
@@ -169,7 +169,18 @@ async function copyFileWithProgress(sourcePath, targetPath, onChunk, writeFlags 
       reject(error);
     };
 
+    const cancelError = () => new TreeSyncError('SYNC_CANCELLED', 'Sync cancelled by user.');
+
+    if (typeof shouldCancel === 'function' && shouldCancel()) {
+      fail(cancelError());
+      return;
+    }
+
     input.on('data', (chunk) => {
+      if (typeof shouldCancel === 'function' && shouldCancel()) {
+        fail(cancelError());
+        return;
+      }
       if (typeof onChunk === 'function') {
         onChunk(chunk.length);
       }
@@ -186,6 +197,13 @@ async function copyFileWithProgress(sourcePath, targetPath, onChunk, writeFlags 
 
     input.pipe(output);
   });
+}
+
+function makeTemporaryBackupPath(targetPath) {
+  const dir = path.dirname(targetPath);
+  const base = path.basename(targetPath);
+  const unique = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  return path.join(dir, `.${base}.lempicka-tmp-${unique}`);
 }
 
 async function walkFiles(root, relative = '') {
@@ -368,6 +386,7 @@ async function syncPlan(plan, onProgress, options = {}) {
   let lastRateTickAt = Date.now();
   const leftRoot = typeof options.leftRoot === 'string' ? options.leftRoot : '';
   const syncLogPath = leftRoot ? path.join(leftRoot, 'sync-history.log') : '';
+  const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : () => false;
   let syncLogHandle = null;
   const directoriesToCreate = Array.isArray(options.directoriesToCreate)
     ? options.directoriesToCreate.filter((value) => typeof value === 'string' && value.trim())
@@ -441,6 +460,10 @@ async function syncPlan(plan, onProgress, options = {}) {
     }
 
     for (const item of plan) {
+      if (shouldCancel()) {
+        throw new TreeSyncError('SYNC_CANCELLED', 'Sync cancelled by user.', { completed, total });
+      }
+
       if (!item || !item.sourcePath || !item.targetPath) {
         throw new TreeSyncError(
           'INVALID_PLAN_ITEM',
@@ -482,22 +505,15 @@ async function syncPlan(plan, onProgress, options = {}) {
         }
       }
 
+      let backupPath = null;
       try {
         try {
-          await fs.unlink(item.targetPath);
+          await fs.access(item.targetPath, fsConstants.F_OK);
+          backupPath = makeTemporaryBackupPath(item.targetPath);
+          await fs.rename(item.targetPath, backupPath);
         } catch (error) {
           if (!error || error.code !== 'ENOENT') {
-            throw new TreeSyncError(
-              'DESTINATION_UNAVAILABLE',
-              `Sync stopped at ${completed}/${total}: cannot remove destination "${item.targetPath}" (${filesystemHint(error)}).`,
-              {
-                completed,
-                total,
-                sourcePath: item.sourcePath,
-                targetPath: item.targetPath,
-                fsCode: error && error.code ? error.code : 'UNKNOWN',
-              }
-            );
+            throw error;
           }
         }
 
@@ -533,12 +549,61 @@ async function syncPlan(plan, onProgress, options = {}) {
               // UI callback failures should not interrupt file operations.
             }
           }
-        }, 'wx');
+        }, 'wx', shouldCancel);
+
         await tryPreserveCreationDate(item.sourcePath, item.targetPath);
+
+        if (backupPath) {
+          try {
+            await fs.unlink(backupPath);
+          } catch (error) {
+            throw new TreeSyncError(
+              'BACKUP_CLEANUP_FAILED',
+              `Copied file but failed to remove temporary backup "${backupPath}" (${filesystemHint(error)}).`,
+              {
+                completed,
+                total,
+                sourcePath: item.sourcePath,
+                targetPath: item.targetPath,
+                backupPath,
+                fsCode: error && error.code ? error.code : 'UNKNOWN',
+              }
+            );
+          }
+          backupPath = null;
+        }
       } catch (error) {
+        try {
+          await fs.unlink(item.targetPath);
+        } catch (cleanupError) {
+          if (!cleanupError || cleanupError.code !== 'ENOENT') {
+            // best effort
+          }
+        }
+
+        if (backupPath) {
+          try {
+            await fs.rename(backupPath, item.targetPath);
+            backupPath = null;
+          } catch (restoreError) {
+            throw new TreeSyncError(
+              'RESTORE_FAILED',
+              `Failed to restore original destination file "${item.targetPath}" (${filesystemHint(restoreError)}).`,
+              {
+                completed,
+                total,
+                sourcePath: item.sourcePath,
+                targetPath: item.targetPath,
+                fsCode: restoreError && restoreError.code ? restoreError.code : 'UNKNOWN',
+              }
+            );
+          }
+        }
+
         if (error instanceof TreeSyncError) {
           throw error;
         }
+
         const base = `Sync stopped at ${completed}/${total} while writing "${item.targetPath}".`;
         let message = `${base} ${filesystemHint(error)}`;
         if (error && error.code === 'ENOSPC') {

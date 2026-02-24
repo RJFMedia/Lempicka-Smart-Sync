@@ -227,6 +227,10 @@ th {
   z-index: 2;
 }
 
+tbody td {
+  font-size: 0.8rem;
+}
+
 td.empty {
   text-align: center;
   color: #9bb0d2;
@@ -238,11 +242,19 @@ td.empty {
 }
 
 
-.compare-table .col-source { width: 36%; }
-.compare-table .col-destination { width: 36%; }
-.compare-table .col-version { width: 8%; }
-.compare-table .col-size { width: 10%; }
+.compare-table .col-source { width: calc((100% - 392px) / 2); }
+.compare-table .col-destination { width: calc((100% - 392px) / 2); }
+.compare-table .col-version { width: 92px; }
+.compare-table .col-size { width: 150px; }
 
-.history-table .col-time { width: 22%; }
-.history-table .col-source { width: 39%; }
-.history-table .col-destination { width: 39%; }
+.history-table .col-time { width: 180px; }
+.history-table .col-source { width: calc((100% - 180px) / 2); }
+.history-table .col-destination { width: calc((100% - 180px) / 2); }
+
+
+/* Keep filename tail visible by truncating from the left. */
+td.tail-ellipsis {
+  direction: rtl;
+  text-align: left;
+  unicode-bidi: plaintext;
+}

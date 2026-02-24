@@ -14,6 +14,8 @@ const resultPanels = Array.from(document.querySelectorAll('.results'));
 let currentPlan = [];
 let currentDirectoriesToCreate = [];
 let isBusy = false;
+let isSyncing = false;
+let isCancellingSync = false;
 let syncHistory = [];
 let lastRequestedWindowHeight = 0;
 let windowHeightUpdateQueued = false;
@@ -30,15 +32,34 @@ function messageFromError(error, fallback) {
   return fallback;
 }
 
-function setBusy(nextBusy) {
-  isBusy = nextBusy;
-  pickLeftBtn.disabled = nextBusy;
-  pickRightBtn.disabled = nextBusy;
-  compareBtn.disabled = nextBusy;
-  syncBtn.disabled = nextBusy || currentPlan.length === 0;
-  clearHistoryBtn.disabled = nextBusy || syncHistory.length === 0;
+function updateControlStates() {
+  pickLeftBtn.disabled = isBusy;
+  pickRightBtn.disabled = isBusy;
+  compareBtn.disabled = isBusy;
+
+  if (isSyncing) {
+    syncBtn.textContent = isCancellingSync ? 'Cancelling...' : 'Cancel';
+    syncBtn.disabled = isCancellingSync;
+  } else {
+    syncBtn.textContent = 'Sync';
+    syncBtn.disabled = isBusy || currentPlan.length === 0;
+  }
+
+  clearHistoryBtn.disabled = isBusy || syncHistory.length === 0;
 }
 
+function setBusy(nextBusy) {
+  isBusy = nextBusy;
+  updateControlStates();
+}
+
+function setSyncState(nextSyncing) {
+  isSyncing = nextSyncing;
+  if (!nextSyncing) {
+    isCancellingSync = false;
+  }
+  updateControlStates();
+}
 function setPlainStatus(message) {
   statusText.classList.remove('sync-live');
   statusText.textContent = message;
@@ -234,7 +255,7 @@ function queueWindowHeightUpdate() {
 
 function renderHistory(history) {
   historyBody.innerHTML = '';
-  clearHistoryBtn.disabled = isBusy || history.length === 0;
+  updateControlStates();
 
   if (!history.length) {
     clearHistory('No syncs have been recorded yet.');
@@ -250,9 +271,11 @@ function renderHistory(history) {
       timeCol.textContent = formatTimestamp(item.timestamp);
 
       const sourceCol = document.createElement('td');
+      sourceCol.className = 'tail-ellipsis';
       sourceCol.textContent = relativePathText(filePath.sourceRelativePath);
 
       const destinationCol = document.createElement('td');
+      destinationCol.className = 'tail-ellipsis';
       destinationCol.textContent = relativePathText(filePath.targetRelativePath);
 
       row.appendChild(timeCol);
@@ -311,9 +334,11 @@ function renderResults(plan) {
     const row = document.createElement('tr');
 
     const sourceCol = document.createElement('td');
+    sourceCol.className = 'tail-ellipsis';
     sourceCol.textContent = relativePathText(item.sourceRelativePath);
 
     const targetCol = document.createElement('td');
+    targetCol.className = 'tail-ellipsis';
     targetCol.textContent = relativePathText(item.targetRelativePath);
 
     const versionCol = document.createElement('td');
@@ -391,6 +416,25 @@ compareBtn.addEventListener('click', async () => {
 });
 
 syncBtn.addEventListener('click', async () => {
+  if (isSyncing) {
+    if (isCancellingSync) {
+      return;
+    }
+
+    isCancellingSync = true;
+    updateControlStates();
+    setPlainStatus('Cancelling sync...');
+
+    try {
+      await window.treeSync.cancelSync();
+    } catch (error) {
+      isCancellingSync = false;
+      updateControlStates();
+      setPlainStatus(`Cancel request failed: ${messageFromError(error, 'Unexpected cancel error.')}`);
+    }
+    return;
+  }
+
   if (!currentPlan.length) {
     setPlainStatus('Nothing to sync.');
     return;
@@ -408,6 +452,7 @@ syncBtn.addEventListener('click', async () => {
   }
 
   setBusy(true);
+  setSyncState(true);
   smoothedThroughputBps = 0;
   progressBar.hidden = false;
   progressBar.value = 0;
@@ -468,11 +513,17 @@ syncBtn.addEventListener('click', async () => {
       renderHistory(syncHistory);
     }
   } catch (error) {
-    setPlainStatus(`Sync failed: ${messageFromError(error, 'Unexpected sync error.')}`);
+    const message = messageFromError(error, 'Unexpected sync error.');
+    if (/cancelled/i.test(message)) {
+      setPlainStatus(message);
+    } else {
+      setPlainStatus(`Sync failed: ${message}`);
+    }
   } finally {
     stopListening();
     progressBar.hidden = true;
     smoothedThroughputBps = 0;
+    setSyncState(false);
     setBusy(false);
   }
 });
@@ -503,6 +554,7 @@ async function initializeFromPersistedState() {
   }
 }
 
+updateControlStates();
 initializeFromPersistedState();
 updateResultsPanelHeights();
 window.addEventListener('resize', updateResultsPanelHeights);

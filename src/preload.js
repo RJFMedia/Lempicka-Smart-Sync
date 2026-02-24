@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('treeSync', {
   compareTrees: (leftRoot, rightRoot) => ipcRenderer.invoke('compare-trees', { leftRoot, rightRoot }),
   syncPlan: (plan, leftRoot, rightRoot, directoriesToCreate) =>
     ipcRenderer.invoke('sync-plan', { plan, leftRoot, rightRoot, directoriesToCreate }),
+  cancelSync: () => ipcRenderer.invoke('cancel-sync'),
   onSyncProgress: (callback) => {
     const listener = (_, payload) => callback(payload);
     ipcRenderer.on('sync-progress', listener);
