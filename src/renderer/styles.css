@@ -1,0 +1,158 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  background: #0b1220;
+  color: #dbe7ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  position: relative;
+  background: #070b14;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image: url("./img/lempicka.jpg");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  opacity: 0.4;
+  z-index: 0;
+  pointer-events: none;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(circle at top, rgba(26, 39, 67, 0.5) 0%, rgba(11, 18, 32, 0.78) 50%, rgba(7, 11, 20, 0.9) 100%);
+  z-index: 1;
+  pointer-events: none;
+}
+
+.app {
+  position: relative;
+  z-index: 2;
+  max-width: 1024px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+h1 {
+  margin: 0 0 20px;
+  font-size: 1.35rem;
+  text-align: center;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+.paths {
+  display: grid;
+  gap: 12px;
+}
+
+.path-row {
+  display: grid;
+  gap: 6px;
+}
+
+.path-input-wrap {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+input[type="text"] {
+  padding: 10px 12px;
+  border: 1px solid #33415f;
+  border-radius: 8px;
+  background: #101a2d;
+  color: #dbe7ff;
+}
+
+button {
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-weight: 600;
+  cursor: pointer;
+  background: #2c7fff;
+  color: #f4f8ff;
+}
+
+button:hover:enabled {
+  background: #1e6ee8;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.actions {
+  margin-top: 16px;
+  display: flex;
+  gap: 8px;
+}
+
+.status {
+  margin-top: 16px;
+  display: grid;
+  gap: 8px;
+}
+
+#statusText {
+  margin: 0;
+}
+
+progress {
+  width: 100%;
+  height: 18px;
+}
+
+.results {
+  margin-top: 20px;
+  background: #101a2d;
+  border: 1px solid #2a3754;
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+}
+
+h2 {
+  margin: 0 0 12px;
+  font-size: 1.15rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 8px;
+  border-bottom: 1px solid #24324d;
+  vertical-align: top;
+  word-break: break-word;
+}
+
+th {
+  background: #13213a;
+}
+
+td.empty {
+  text-align: center;
+  color: #9bb0d2;
+  padding: 20px 8px;
+}

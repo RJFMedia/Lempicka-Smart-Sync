@@ -1,0 +1,19 @@
+{
+  "name": "lempicka-smart-sync",
+  "version": "1.0.0",
+  "productName": "Lempicka Smart Sync",
+  "description": "Desktop app to compare and sync versioned files between directory trees",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node scripts/start-electron.js",
+    "test": "node --test",
+    "build": "bash scripts/package-macos-app.sh",
+    "icon:mac": "bash scripts/build-mac-icon.sh",
+    "package:mac": "bash scripts/package-macos-app.sh"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^40.6.0"
+  }
+}

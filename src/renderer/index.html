@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lempicka Smart Sync</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <h1>lempicka smart sync</h1>
+
+      <section class="paths">
+        <div class="path-row">
+          <label for="leftPath">Left tree (versioned files)</label>
+          <div class="path-input-wrap">
+            <input id="leftPath" type="text" placeholder="Choose left directory" readonly />
+            <button id="pickLeft">Browse</button>
+          </div>
+        </div>
+
+        <div class="path-row">
+          <label for="rightPath">Right tree (target files)</label>
+          <div class="path-input-wrap">
+            <input id="rightPath" type="text" placeholder="Choose right directory" readonly />
+            <button id="pickRight">Browse</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="actions">
+        <button id="compareBtn">Compare</button>
+        <button id="syncBtn" disabled>Sync</button>
+      </section>
+
+      <section class="status">
+        <p id="statusText">Choose two folders, then run compare.</p>
+        <progress id="progressBar" value="0" max="100" hidden></progress>
+      </section>
+
+      <section class="results">
+        <h2>Files to Replace</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Target Relative Path</th>
+              <th>Source File</th>
+              <th>Version</th>
+              <th>Source Bytes</th>
+              <th>Existing Bytes</th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody">
+            <tr>
+              <td colspan="5" class="empty">No comparison run yet.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="results">
+        <h2>Sync History</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Left Directory</th>
+              <th>Right Directory</th>
+              <th>Copied</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody">
+            <tr>
+              <td colspan="4" class="empty">No syncs have been recorded yet.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
