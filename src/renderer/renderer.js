@@ -4,7 +4,9 @@ const pickLeftBtn = document.getElementById('pickLeft');
 const pickRightBtn = document.getElementById('pickRight');
 const compareBtn = document.getElementById('compareBtn');
 const syncBtn = document.getElementById('syncBtn');
+const pauseBtn = document.getElementById('pauseBtn');
 const statusText = document.getElementById('statusText');
+const syncReport = document.getElementById('syncReport');
 const resultsBody = document.getElementById('resultsBody');
 const historyBody = document.getElementById('historyBody');
 const clearHistoryBtn = document.getElementById('clearHistoryBtn');
@@ -16,6 +18,7 @@ let currentDirectoriesToCreate = [];
 let isBusy = false;
 let isSyncing = false;
 let isCancellingSync = false;
+let isPaused = false;
 let syncHistory = [];
 let lastRequestedWindowHeight = 0;
 let windowHeightUpdateQueued = false;
@@ -32,6 +35,12 @@ function messageFromError(error, fallback) {
   return fallback;
 }
 
+function setSyncReport(message) {
+  const text = String(message || '').trim();
+  syncReport.hidden = text.length === 0;
+  syncReport.textContent = text;
+}
+
 function updateControlStates() {
   pickLeftBtn.disabled = isBusy;
   pickRightBtn.disabled = isBusy;
@@ -45,6 +54,10 @@ function updateControlStates() {
     syncBtn.disabled = isBusy || currentPlan.length === 0;
   }
 
+  pauseBtn.hidden = !isSyncing;
+  pauseBtn.disabled = !isSyncing || isCancellingSync;
+  pauseBtn.textContent = isPaused ? 'Resume' : 'Pause';
+
   clearHistoryBtn.disabled = isBusy || syncHistory.length === 0;
 }
 
@@ -53,13 +66,15 @@ function setBusy(nextBusy) {
   updateControlStates();
 }
 
-function setSyncState(nextSyncing) {
+function setSyncState(nextSyncing, paused = false) {
   isSyncing = nextSyncing;
+  isPaused = nextSyncing ? paused : false;
   if (!nextSyncing) {
     isCancellingSync = false;
   }
   updateControlStates();
 }
+
 function setPlainStatus(message) {
   statusText.classList.remove('sync-live');
   statusText.textContent = message;
@@ -117,6 +132,17 @@ function formatEta(seconds) {
   return `${minutes}:${String(secs).padStart(2, '0')}`;
 }
 
+function formatDuration(ms) {
+  const seconds = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+  return `${minutes}:${String(secs).padStart(2, '0')}`;
+}
+
 function clearResults(message) {
   resultsBody.innerHTML = '';
   const row = document.createElement('tr');
@@ -151,15 +177,6 @@ function formatTimestamp(isoTimestamp) {
   const minute = String(parsed.getMinutes()).padStart(2, '0');
   const second = String(parsed.getSeconds()).padStart(2, '0');
   return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
-}
-
-function fileNameOnly(relativeOrFilePath) {
-  const raw = String(relativeOrFilePath || '').trim();
-  if (!raw) {
-    return '(not recorded)';
-  }
-  const parts = raw.split(/[\\/]/);
-  return parts[parts.length - 1] || raw;
 }
 
 function relativePathText(relativeOrFilePath) {
@@ -287,39 +304,62 @@ function renderHistory(history) {
   updateResultsPanelHeights();
 }
 
-clearHistoryBtn.addEventListener('click', async () => {
-  if (!syncHistory.length || isBusy) {
-    return;
+function formatSyncSummary(result) {
+  const status = result && result.status ? result.status : 'completed';
+  const copied = Number(result.copied) || 0;
+  const total = Number(result.total) || 0;
+  const failed = Array.isArray(result.failed) ? result.failed.length : 0;
+  const bytes = Number(result.bytesCopied) || 0;
+  const totalBytes = Number(result.totalBytes) || 0;
+  const duration = formatDuration(result.durationMs);
+  const avg = formatSpeed(result.averageThroughputBps);
+
+  const lines = [];
+  if (status === 'cancelled') {
+    lines.push(`Outcome: Cancelled - ${result.errorMessage || 'Cancelled by user.'}`);
+  } else if (status === 'error') {
+    lines.push(`Outcome: Error - ${result.errorMessage || 'Sync failed.'}`);
+  } else {
+    lines.push('Outcome: Completed');
   }
 
-  setBusy(true);
-  try {
-    await window.treeSync.clearSyncHistory();
-    syncHistory = [];
-    renderHistory(syncHistory);
-    setPlainStatus('Sync history cleared.');
-  } catch (error) {
-    setPlainStatus(`Failed to clear history: ${messageFromError(error, 'Unexpected error.')}`);
-  } finally {
-    setBusy(false);
-  }
-});
+  lines.push(`Summary: copied ${copied}/${total}, failed ${failed}`);
+  lines.push(`Bytes: ${formatBytesHuman(bytes)} / ${formatBytesHuman(totalBytes)}`);
+  lines.push(`Duration: ${duration}, average: ${avg}`);
 
-async function saveSelectedDirectories() {
-  try {
-    const result = await window.treeSync.setSelectedDirectories(
-      leftPathInput.value.trim(),
-      rightPathInput.value.trim()
-    );
-    if (result && result.warning) {
-      setPlainStatus(`Warning: ${result.warning}`);
+  const succeeded = Array.isArray(result.succeededFiles) ? result.succeededFiles : [];
+  if (succeeded.length > 0) {
+    lines.push('');
+    lines.push('Successfully transferred files:');
+    const shown = succeeded.slice(0, 25);
+    for (const item of shown) {
+      lines.push(`- ${item.targetRelativePath || item.sourceRelativePath || '(unknown)'}`);
     }
-  } catch (error) {
-    setPlainStatus(`Warning: ${messageFromError(
-      error,
-      'Failed to save selected directories.'
-    )}`);
+    if (succeeded.length > shown.length) {
+      lines.push(`...and ${succeeded.length - shown.length} more`);
+    }
   }
+
+  if (failed > 0) {
+    lines.push('');
+    lines.push('Failed files:');
+    const failures = result.failed.slice(0, 25);
+    for (const failure of failures) {
+      const target = failure && failure.targetRelativePath ? failure.targetRelativePath : '(unknown)';
+      const msg = failure && failure.message ? failure.message : 'Unknown error';
+      lines.push(`- ${target}: ${msg}`);
+    }
+    if (result.failed.length > failures.length) {
+      lines.push(`...and ${result.failed.length - failures.length} more`);
+    }
+  }
+
+  if (result.warning) {
+    lines.push('');
+    lines.push(`Warning: ${result.warning}`);
+  }
+
+  return lines.join('\n');
 }
 
 function renderResults(plan) {
@@ -363,6 +403,65 @@ function renderResults(plan) {
   updateResultsPanelHeights();
 }
 
+function applySyncProgress(progress) {
+  const totalBytes = Number(progress.totalBytes) || 0;
+  const transferred = Number(progress.bytesTransferred) || 0;
+  const failedCount = Number(progress.failed) || 0;
+
+  progressBar.max = totalBytes > 0 ? totalBytes : 1;
+  progressBar.value = Math.min(transferred, progressBar.max);
+
+  const instantaneousBps = Number(progress.throughputBps) || 0;
+  if (instantaneousBps > 0) {
+    smoothedThroughputBps = smoothedThroughputBps > 0
+      ? (smoothedThroughputBps * 0.7) + (instantaneousBps * 0.3)
+      : instantaneousBps;
+  }
+
+  const activeCount = Number(progress.activeCount) || 0;
+  const completed = Number(progress.completed) || 0;
+  const total = Number(progress.total) || 0;
+  const currentIndex = Number(progress.currentIndex) || 0;
+  const displayIndex = Math.max(
+    currentIndex,
+    Math.min(total, completed + failedCount + (activeCount > 0 ? 1 : 0))
+  );
+
+  isPaused = Boolean(progress.isPaused);
+  updateControlStates();
+
+  const remainingBytes = Math.max(0, totalBytes - transferred);
+  const etaText = (!isPaused && smoothedThroughputBps > 0 && remainingBytes > 0)
+    ? ` ETA ${formatEta(remainingBytes / smoothedThroughputBps)}`
+    : '';
+
+  const bytesText = totalBytes > 0
+    ? `(${formatBytesHuman(transferred)}/${formatBytesHuman(totalBytes)})`
+    : '';
+  const speedText = !isPaused && smoothedThroughputBps > 0
+    ? ` @ ${formatSpeed(smoothedThroughputBps)}`
+    : '';
+  const failText = failedCount > 0 ? ` Failed ${failedCount}` : '';
+  const pauseText = isPaused ? ' Paused' : '';
+
+  const activeText = activeCount > 1 ? ` (${activeCount} active)` : '';
+  const target = progress.targetRelativePath || '(preparing)';
+  const leftText = `Syncing ${displayIndex}/${total}${activeText}: ${target}`;
+  const rightText = `${bytesText}${speedText}${etaText}${failText}${pauseText}`.trim();
+
+  setSyncStatus(leftText, rightText);
+}
+
+async function compareDirectories(leftRoot, rightRoot) {
+  const result = await window.treeSync.compareTrees(leftRoot, rightRoot);
+  currentPlan = result.plan;
+  currentDirectoriesToCreate = Array.isArray(result.directoriesToCreate)
+    ? result.directoriesToCreate
+    : [];
+  renderResults(currentPlan);
+  return result;
+}
+
 async function pickDirectory(inputEl) {
   const selected = await window.treeSync.pickDirectory(inputEl.value || undefined);
   if (selected) {
@@ -370,6 +469,80 @@ async function pickDirectory(inputEl) {
     await saveSelectedDirectories();
   }
 }
+
+async function saveSelectedDirectories() {
+  try {
+    const result = await window.treeSync.setSelectedDirectories(
+      leftPathInput.value.trim(),
+      rightPathInput.value.trim()
+    );
+    if (result && result.warning) {
+      setPlainStatus(`Warning: ${result.warning}`);
+    }
+  } catch (error) {
+    setPlainStatus(`Warning: ${messageFromError(
+      error,
+      'Failed to save selected directories.'
+    )}`);
+  }
+}
+
+async function refreshCompareAfterSync(result) {
+  const leftRoot = leftPathInput.value.trim();
+  const rightRoot = rightPathInput.value.trim();
+
+  let outcomeText = 'Sync complete.';
+  if (result.status === 'cancelled') {
+    outcomeText = `Sync cancelled: ${result.errorMessage || 'Cancelled by user.'}`;
+  } else if (result.status === 'error') {
+    outcomeText = `Sync error: ${result.errorMessage || 'Unexpected sync error.'}`;
+  } else if (result.warning) {
+    outcomeText = `Sync complete with warning: ${result.warning}`;
+  }
+
+  if (!leftRoot || !rightRoot) {
+    setPlainStatus(outcomeText);
+    return;
+  }
+
+  try {
+    await compareDirectories(leftRoot, rightRoot);
+    if (currentPlan.length > 0) {
+      const totalBytes = currentPlan.reduce((sum, item) => sum + (Number(item.sourceSize) || 0), 0);
+      setPlainStatus(
+        `${outcomeText} Compare refreshed: ${currentPlan.length} file(s) still pending ` +
+        `(${formatBytesHuman(totalBytes)} total).`
+      );
+    } else {
+      setPlainStatus(`${outcomeText} Compare refreshed: no files need syncing.`);
+    }
+  } catch (error) {
+    currentPlan = [];
+    currentDirectoriesToCreate = [];
+    clearResults('Comparison failed.');
+    setPlainStatus(
+      `${outcomeText} Compare refresh failed: ${messageFromError(error, 'Unexpected compare error.')}`
+    );
+  }
+}
+
+clearHistoryBtn.addEventListener('click', async () => {
+  if (!syncHistory.length || isBusy) {
+    return;
+  }
+
+  setBusy(true);
+  try {
+    await window.treeSync.clearSyncHistory();
+    syncHistory = [];
+    renderHistory(syncHistory);
+    setPlainStatus('Sync history cleared.');
+  } catch (error) {
+    setPlainStatus(`Failed to clear history: ${messageFromError(error, 'Unexpected error.')}`);
+  } finally {
+    setBusy(false);
+  }
+});
 
 pickLeftBtn.addEventListener('click', () => pickDirectory(leftPathInput));
 pickRightBtn.addEventListener('click', () => pickDirectory(rightPathInput));
@@ -384,17 +557,13 @@ compareBtn.addEventListener('click', async () => {
   }
 
   setBusy(true);
+  setSyncReport('');
   setPlainStatus('Comparing directory trees...');
   progressBar.hidden = true;
 
   try {
     await saveSelectedDirectories();
-    const result = await window.treeSync.compareTrees(leftRoot, rightRoot);
-    currentPlan = result.plan;
-    currentDirectoriesToCreate = Array.isArray(result.directoriesToCreate)
-      ? result.directoriesToCreate
-      : [];
-    renderResults(currentPlan);
+    await compareDirectories(leftRoot, rightRoot);
 
     if (currentPlan.length > 0) {
       const totalBytes = currentPlan.reduce((sum, item) => sum + (Number(item.sourceSize) || 0), 0);
@@ -412,6 +581,58 @@ compareBtn.addEventListener('click', async () => {
     setPlainStatus(`Compare failed: ${messageFromError(error, 'Unexpected compare error.')}`);
   } finally {
     setBusy(false);
+  }
+});
+
+async function runSyncOperation(executeSyncPromiseFactory) {
+  setBusy(true);
+  setSyncState(true, false);
+  setSyncReport('');
+  smoothedThroughputBps = 0;
+  progressBar.hidden = false;
+  progressBar.value = 0;
+
+  const stopListening = window.treeSync.onSyncProgress((progress) => {
+    applySyncProgress(progress || {});
+  });
+
+  try {
+    const result = await executeSyncPromiseFactory();
+
+    if (result.logEntry) {
+      syncHistory = [result.logEntry, ...syncHistory];
+      renderHistory(syncHistory);
+    }
+
+    setSyncReport(formatSyncSummary(result));
+    await refreshCompareAfterSync(result);
+  } catch (error) {
+    const message = messageFromError(error, 'Unexpected sync error.');
+    setPlainStatus(`Sync failed: ${message}`);
+    setSyncReport(`Outcome: Error - ${message}`);
+  } finally {
+    stopListening();
+    progressBar.hidden = true;
+    smoothedThroughputBps = 0;
+    setSyncState(false, false);
+    setBusy(false);
+  }
+}
+
+pauseBtn.addEventListener('click', async () => {
+  if (!isSyncing || isCancellingSync) {
+    return;
+  }
+
+  try {
+    const state = await window.treeSync.toggleSyncPause();
+    if (state && state.active) {
+      isPaused = Boolean(state.paused);
+      updateControlStates();
+      setPlainStatus(isPaused ? 'Sync paused.' : 'Sync resumed.');
+    }
+  } catch (error) {
+    setPlainStatus(`Pause toggle failed: ${messageFromError(error, 'Unexpected pause error.')}`);
   }
 });
 
@@ -451,81 +672,18 @@ syncBtn.addEventListener('click', async () => {
     }
   }
 
-  setBusy(true);
-  setSyncState(true);
-  smoothedThroughputBps = 0;
-  progressBar.hidden = false;
-  progressBar.value = 0;
   const plannedTotalBytes = currentPlan.reduce((sum, item) => sum + (Number(item.sourceSize) || 0), 0);
   progressBar.max = plannedTotalBytes > 0 ? plannedTotalBytes : 1;
-  setPlainStatus(`Syncing ${currentPlan.length} file(s)...`);
 
-  const stopListening = window.treeSync.onSyncProgress((progress) => {
-    const totalBytes = Number(progress.totalBytes) || 0;
-    const transferred = Number(progress.bytesTransferred) || 0;
-    progressBar.max = totalBytes > 0 ? totalBytes : 1;
-    progressBar.value = Math.min(transferred, progressBar.max);
-
-    const displayIndex = Number.isFinite(progress.currentIndex)
-      ? progress.currentIndex
-      : Math.min(progress.completed + 1, progress.total);
-    const speedText = Number.isFinite(progress.throughputBps)
-      ? ` @ ${formatSpeed(progress.throughputBps)}`
-      : '';
-    const bytesText = totalBytes > 0
-      ? ` (${formatBytesHuman(transferred)}/${formatBytesHuman(totalBytes)})`
-      : '';
-
-    const instantaneousBps = Number(progress.throughputBps) || 0;
-    if (instantaneousBps > 0) {
-      smoothedThroughputBps = smoothedThroughputBps > 0
-        ? (smoothedThroughputBps * 0.7) + (instantaneousBps * 0.3)
-        : instantaneousBps;
-    }
-    const remainingBytes = Math.max(0, totalBytes - transferred);
-    const etaText = smoothedThroughputBps > 0 && remainingBytes > 0
-      ? ` ETA ${formatEta(remainingBytes / smoothedThroughputBps)}`
-      : '';
-    if (progress.phase === 'copied' && progress.completed < progress.total) {
-      return;
-    }
-    const leftText = `Syncing ${displayIndex}/${progress.total}: ${progress.targetRelativePath}`;
-    const rightText = `${bytesText}${speedText}${etaText}`.trim();
-    setSyncStatus(leftText, rightText);
-  });
-
-  try {
-    const result = await window.treeSync.syncPlan(
+  await runSyncOperation(async () => {
+    setPlainStatus(`Syncing ${currentPlan.length} file(s)...`);
+    return window.treeSync.syncPlan(
       currentPlan,
       leftPathInput.value.trim(),
       rightPathInput.value.trim(),
       currentDirectoriesToCreate
     );
-    currentPlan = [];
-    currentDirectoriesToCreate = [];
-    clearResults('Sync complete. Run compare again to refresh.');
-    setPlainStatus(`Sync complete: ${result.copied} file(s) copied.`);
-    if (result.warning) {
-      setPlainStatus(`Sync complete with warning: ${result.warning}`);
-    }
-    if (result.logEntry) {
-      syncHistory = [result.logEntry, ...syncHistory];
-      renderHistory(syncHistory);
-    }
-  } catch (error) {
-    const message = messageFromError(error, 'Unexpected sync error.');
-    if (/cancelled/i.test(message)) {
-      setPlainStatus(message);
-    } else {
-      setPlainStatus(`Sync failed: ${message}`);
-    }
-  } finally {
-    stopListening();
-    progressBar.hidden = true;
-    smoothedThroughputBps = 0;
-    setSyncState(false);
-    setBusy(false);
-  }
+  });
 });
 
 async function initializeFromPersistedState() {

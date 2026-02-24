@@ -113,6 +113,16 @@ button:disabled {
   margin-top: 12px;
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
+}
+
+#pauseBtn {
+  background: #2a3b60;
+  color: #dce8ff;
+}
+
+#pauseBtn:hover:enabled {
+  background: #334b78;
 }
 
 .status {
@@ -152,6 +162,20 @@ button:disabled {
 progress {
   width: 100%;
   height: 18px;
+}
+
+#syncReport {
+  margin: 0;
+  background: #0f1a2d;
+  border: 1px solid #24324d;
+  border-radius: 8px;
+  color: #c7d6f3;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  padding: 8px;
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
 }
 
 .results {
@@ -241,7 +265,6 @@ td.empty {
   white-space: nowrap;
 }
 
-
 .compare-table .col-source { width: calc((100% - 392px) / 2); }
 .compare-table .col-destination { width: calc((100% - 392px) / 2); }
 .compare-table .col-version { width: 92px; }
@@ -250,7 +273,6 @@ td.empty {
 .history-table .col-time { width: 180px; }
 .history-table .col-source { width: calc((100% - 180px) / 2); }
 .history-table .col-destination { width: calc((100% - 180px) / 2); }
-
 
 /* Keep filename tail visible by truncating from the left. */
 td.tail-ellipsis {

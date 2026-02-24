@@ -18,6 +18,7 @@ app.setName('Lempicka Smart Sync');
 app.name = 'Lempicka Smart Sync';
 let windowContentWidth = 1100;
 let activeSyncSession = null;
+let syncJournalPath = null;
 
 async function persistState() {
   if (!stateFilePath) {
@@ -65,7 +66,10 @@ app.whenReady().then(async () => {
   if (process.platform === 'darwin' && fs.existsSync(appIconPath)) {
     app.dock.setIcon(nativeImage.createFromPath(appIconPath));
   }
+
   stateFilePath = path.join(app.getPath('userData'), 'state.json');
+  syncJournalPath = path.join(app.getPath('userData'), 'sync-recovery.json');
+
   try {
     appState = await loadState(stateFilePath);
   } catch (error) {
@@ -180,17 +184,127 @@ ipcMain.handle('cancel-sync', async () => {
   return { requested: true };
 });
 
-ipcMain.handle('sync-plan', async (event, payload) => {
+ipcMain.handle('toggle-sync-pause', async () => {
+  if (!activeSyncSession) {
+    return { active: false, paused: false };
+  }
+
+  activeSyncSession.paused = !activeSyncSession.paused;
+  return {
+    active: true,
+    paused: activeSyncSession.paused,
+  };
+});
+
+async function appendHistoryFromSyncResult(result) {
+  let warning = null;
+  let logEntry = null;
+
+  const files = Array.isArray(result && result.succeededFiles)
+    ? result.succeededFiles.map((item) => ({
+        sourceRelativePath: item.sourceRelativePath,
+        targetRelativePath: item.targetRelativePath,
+      }))
+    : [];
+
+  if (files.length === 0) {
+    return { warning, logEntry };
+  }
+
+  try {
+    const appended = appendSyncHistory(appState, {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: new Date().toISOString(),
+      leftRoot: typeof result.leftRoot === 'string' ? result.leftRoot : '',
+      rightRoot: typeof result.rightRoot === 'string' ? result.rightRoot : '',
+      copied: Number(result.copied) || 0,
+      total: Number(result.total) || 0,
+      files,
+    });
+    appState = appended.nextState;
+    logEntry = appended.entry;
+    await persistState();
+  } catch (error) {
+    console.error('Failed to persist sync history:', error);
+    warning = 'History could not be saved.';
+  }
+
+  return { warning, logEntry };
+}
+
+function emptySyncResult() {
+  return {
+    copied: 0,
+    total: 0,
+    bytesCopied: 0,
+    totalBytes: 0,
+    failed: [],
+    succeededFiles: [],
+    durationMs: 0,
+    averageThroughputBps: 0,
+    leftRoot: '',
+    rightRoot: '',
+    resumedFromJournal: false,
+  };
+}
+
+async function runWithSession(event, syncRun) {
   if (activeSyncSession) {
     throw new Error('A sync operation is already running.');
   }
 
-  const { plan, leftRoot, rightRoot, directoriesToCreate } = payload || {};
-  const syncSession = { cancelRequested: false };
+  const syncSession = {
+    cancelRequested: false,
+    paused: false,
+  };
   activeSyncSession = syncSession;
 
+  let status = 'completed';
+  let errorCode = '';
+  let errorMessage = '';
+  let result = emptySyncResult();
+
   try {
-    const result = await runSyncPlan(
+    result = await syncRun(syncSession);
+  } catch (error) {
+    status = error && error.code === 'SYNC_CANCELLED' ? 'cancelled' : 'error';
+    errorCode = error && error.code ? error.code : 'SYNC_ERROR';
+    errorMessage = error && error.message ? error.message : 'Sync failed.';
+
+    const partialResult = error && error.details && error.details.partialResult;
+    if (partialResult && typeof partialResult === 'object') {
+      result = { ...emptySyncResult(), ...partialResult };
+    }
+  } finally {
+    if (activeSyncSession === syncSession) {
+      activeSyncSession = null;
+    }
+  }
+
+  const { warning: historyWarning, logEntry } = await appendHistoryFromSyncResult(result);
+
+  let warning = historyWarning;
+  const failedCount = Array.isArray(result.failed) ? result.failed.length : 0;
+  if (failedCount > 0) {
+    const failedWarning = `${failedCount} file(s) failed and were skipped.`;
+    warning = warning ? `${failedWarning} ${warning}` : failedWarning;
+  }
+
+  return {
+    ...result,
+    status,
+    errorCode,
+    errorMessage,
+    warning,
+    logEntry,
+  };
+}
+
+ipcMain.handle('sync-plan', async (event, payload) => {
+  const { plan, leftRoot, rightRoot, directoriesToCreate } = payload || {};
+
+  return runWithSession(event, async (syncSession) => {
+    return runSyncPlan(
       plan,
       (progress) => {
         event.sender.send('sync-progress', progress);
@@ -200,43 +314,13 @@ ipcMain.handle('sync-plan', async (event, payload) => {
         rightRoot,
         directoriesToCreate,
         shouldCancel: () => syncSession.cancelRequested,
+        shouldPause: () => syncSession.paused,
+        continueOnError: true,
+        retryCount: 2,
+        retryBaseDelayMs: 300,
+        maxParallelSmallFiles: 3,
+        journalPath: syncJournalPath,
       }
     );
-
-    let logEntry = null;
-    let warning = null;
-
-    try {
-      const appended = appendSyncHistory(appState, {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        timestamp: new Date().toISOString(),
-        leftRoot: typeof leftRoot === 'string' ? leftRoot : '',
-        rightRoot: typeof rightRoot === 'string' ? rightRoot : '',
-        copied: result.copied,
-        total: result.total,
-        files: Array.isArray(plan)
-          ? plan.map((item) => ({
-              sourceRelativePath: item.sourceRelativePath,
-              targetRelativePath: item.targetRelativePath,
-            }))
-          : [],
-      });
-      appState = appended.nextState;
-      logEntry = appended.entry;
-      await persistState();
-    } catch (error) {
-      console.error('Sync succeeded but failed to persist sync history:', error);
-      warning = 'Sync completed, but history could not be saved.';
-    }
-
-    return {
-      ...result,
-      logEntry,
-      warning,
-    };
-  } finally {
-    if (activeSyncSession === syncSession) {
-      activeSyncSession = null;
-    }
-  }
+  });
 });

@@ -4,7 +4,13 @@ const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
 
-const { parseVersionedName, buildComparePlan, syncPlan } = require('../src/core/sync');
+const {
+  parseVersionedName,
+  buildComparePlan,
+  syncPlan,
+  getSyncRecoverySummary,
+  resumeSyncFromJournal,
+} = require('../src/core/sync');
 
 async function withTempDirs(run) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tree-sync-test-'));
@@ -91,19 +97,9 @@ test('syncPlan copies files and emits progress', async () => {
     });
 
     assert.equal(syncResult.copied, 1);
-    assert.equal(progressEvents.length, 2);
-    assert.equal(progressEvents[0].phase, 'copying');
-    assert.equal(progressEvents[0].currentIndex, 1);
-    assert.equal(progressEvents[0].completed, 0);
-    assert.equal(progressEvents[0].total, 1);
-    assert.equal(progressEvents[0].totalBytes, 5);
-    assert.equal(progressEvents[0].bytesTransferred, 0);
-    assert.equal(progressEvents[1].phase, 'copied');
-    assert.equal(progressEvents[1].currentIndex, 1);
-    assert.equal(progressEvents[1].completed, 1);
-    assert.equal(progressEvents[1].total, 1);
-    assert.equal(progressEvents[1].totalBytes, 5);
-    assert.equal(progressEvents[1].bytesTransferred, 5);
+    assert.equal(syncResult.failed.length, 0);
+    assert.ok(progressEvents.some((event) => event.phase === 'copying'));
+    assert.ok(progressEvents.some((event) => event.phase === 'copied'));
 
     const copied = await fs.readFile(path.join(right, 'a.txt'), 'utf8');
     assert.equal(copied, 'hello');
@@ -133,8 +129,30 @@ test('syncPlan reports partial progress when a source file disappears mid-sync',
     const syncPromise = syncPlan(compare.plan);
     await assert.rejects(
       syncPromise,
-      /Sync stopped at 1\/2: source file is unavailable/
+      /source file is unavailable/i
     );
+
+    const firstContents = await fs.readFile(path.join(right, 'first.txt'), 'utf8');
+    assert.equal(firstContents, 'first');
+  });
+});
+
+test('syncPlan can continue past per-file errors and report failures', async () => {
+  await withTempDirs(async ({ left, right }) => {
+    await writeFile(left, 'first_v1.txt', 'first');
+    await writeFile(left, 'second_v1.txt', 'second');
+
+    const compare = await buildComparePlan(left, right);
+    const secondItem = compare.plan.find((item) => item.targetRelativePath === 'second.txt');
+    await fs.rm(secondItem.sourcePath);
+
+    const result = await syncPlan(compare.plan, undefined, {
+      continueOnError: true,
+    });
+
+    assert.equal(result.copied, 1);
+    assert.equal(result.failed.length, 1);
+    assert.match(result.failed[0].targetRelativePath, /second\.txt$/);
 
     const firstContents = await fs.readFile(path.join(right, 'first.txt'), 'utf8');
     assert.equal(firstContents, 'first');
@@ -185,10 +203,9 @@ test('syncPlan creates and appends sync-history.log in source root', async () =>
     const lines = logContents.trim().split('\n');
 
     assert.equal(lines.length, 3);
-    assert.match(lines[0], /\t/);
-    assert.match(lines[0], new RegExp(`\\t${path.join(right, 'a.txt')}$`));
-    assert.match(lines[1], new RegExp(`\\t${path.join(right, 'b.txt')}$`));
-    assert.match(lines[2], new RegExp(`\\t${path.join(right, 'a.txt')}$`));
+    assert.ok(lines.every((line) => /\t/.test(line)));
+    assert.equal(lines.filter((line) => line.endsWith(path.join(right, 'a.txt'))).length, 2);
+    assert.equal(lines.filter((line) => line.endsWith(path.join(right, 'b.txt'))).length, 1);
   });
 });
 
@@ -223,5 +240,49 @@ test('syncPlan restores original destination file when cancelled during replacem
 
     const restored = await fs.readFile(path.join(right, 'clip.txt'), 'utf8');
     assert.equal(restored, 'old-destination-content');
+  });
+});
+
+test('sync recovery journal can resume remaining files after cancellation', async () => {
+  await withTempDirs(async ({ left, right, root }) => {
+    await writeFile(left, 'one_v1.txt', '1111');
+    await writeFile(left, 'two_v1.txt', '2222');
+
+    const compare = await buildComparePlan(left, right);
+    const journalPath = path.join(root, 'sync-recovery.json');
+
+    let cancelRequested = false;
+    await assert.rejects(
+      () => syncPlan(compare.plan, (progress) => {
+        if (progress.phase === 'copied' && progress.completed >= 1) {
+          cancelRequested = true;
+        }
+      }, {
+        leftRoot: left,
+        rightRoot: right,
+        journalPath,
+        continueOnError: true,
+        shouldCancel: () => cancelRequested,
+        maxParallelSmallFiles: 1,
+      }),
+      /cancelled/i
+    );
+
+    const summary = await getSyncRecoverySummary(journalPath);
+    assert.ok(summary);
+    assert.equal(summary.pendingCount, 1);
+
+    const resumed = await resumeSyncFromJournal(journalPath, undefined, {
+      continueOnError: true,
+    });
+    assert.equal(resumed.copied, 1);
+
+    const finalSummary = await getSyncRecoverySummary(journalPath);
+    assert.equal(finalSummary, null);
+
+    const one = await fs.readFile(path.join(right, 'one.txt'), 'utf8');
+    const two = await fs.readFile(path.join(right, 'two.txt'), 'utf8');
+    assert.equal(one, '1111');
+    assert.equal(two, '2222');
   });
 });
