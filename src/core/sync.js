@@ -850,6 +850,31 @@ async function recoverActiveEntriesFromJournal(state) {
   state.updatedAt = new Date().toISOString();
 }
 
+async function cleanupSyncRecoveryArtifacts(journalPath) {
+  const journalState = await readSyncJournal(journalPath);
+  if (!journalState) {
+    return {
+      hadJournal: false,
+      recoveredActiveEntries: 0,
+    };
+  }
+
+  const activeEntries = journalState.activeEntries && typeof journalState.activeEntries === 'object'
+    ? Object.keys(journalState.activeEntries).length
+    : 0;
+
+  if (activeEntries > 0) {
+    await recoverActiveEntriesFromJournal(journalState);
+  }
+
+  await removeSyncJournal(journalPath);
+
+  return {
+    hadJournal: true,
+    recoveredActiveEntries: activeEntries,
+  };
+}
+
 async function resumeSyncFromJournal(journalPath, onProgress, options = {}) {
   const journalState = await readSyncJournal(journalPath);
   if (!journalState) {
@@ -1535,5 +1560,6 @@ module.exports = {
   syncPlan,
   getSyncRecoverySummary,
   resumeSyncFromJournal,
+  cleanupSyncRecoveryArtifacts,
   TreeSyncError,
 };

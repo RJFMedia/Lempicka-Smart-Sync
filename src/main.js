@@ -3,7 +3,11 @@ const { app, BrowserWindow, ipcMain, dialog, nativeImage, screen, Menu, clipboar
 const path = require('path');
 const fs = require('fs');
 const { autoUpdater } = require('electron-updater');
-const { buildComparePlan, syncPlan: runSyncPlan } = require('./core/sync');
+const {
+  buildComparePlan,
+  syncPlan: runSyncPlan,
+  cleanupSyncRecoveryArtifacts,
+} = require('./core/sync');
 const {
   loadState,
   saveState,
@@ -34,6 +38,8 @@ let autoUpdaterConfigured = false;
 let manualUpdateCheckInProgress = false;
 let appOperation = APP_OPERATION.IDLE;
 let lastCompareContext = null;
+let isQuitConfirmationInProgress = false;
+let allowImmediateQuit = false;
 
 function normalizeRootForState(rawPath) {
   const resolved = path.resolve(String(rawPath || ''));
@@ -130,6 +136,56 @@ async function persistState() {
   }
   appState = await saveState(stateFilePath, appState);
   return appState;
+}
+
+async function cancelActiveSyncAndWait() {
+  const session = activeSyncSession;
+  if (!session) {
+    return;
+  }
+
+  session.paused = false;
+  session.cancelRequested = true;
+
+  if (session.donePromise && typeof session.donePromise.then === 'function') {
+    await session.donePromise.catch(() => undefined);
+  }
+}
+
+async function maybeQuitWithSyncRunningPrompt() {
+  if (!activeSyncSession) {
+    return false;
+  }
+
+  if (isQuitConfirmationInProgress) {
+    return true;
+  }
+
+  isQuitConfirmationInProgress = true;
+  try {
+    const win = getActiveWindow();
+    const result = await dialog.showMessageBox(win || undefined, {
+      type: 'warning',
+      buttons: ['No, Continue Sync', 'Yes, Quit'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Sync In Progress',
+      message: 'A sync is still running.',
+      detail: 'If you quit now, Lempicka Smart Sync will cancel the transfer and restore the original destination file for any file currently being replaced before quitting.',
+      noLink: true,
+    });
+
+    if (result.response !== 1) {
+      return true;
+    }
+
+    await cancelActiveSyncAndWait();
+    allowImmediateQuit = true;
+    setImmediate(() => app.quit());
+    return true;
+  } finally {
+    isQuitConfirmationInProgress = false;
+  }
 }
 
 function getActiveWindow() {
@@ -353,6 +409,15 @@ function createWindow() {
     ...windowOptions,
   });
 
+  win.on('close', (event) => {
+    if (!allowImmediateQuit && activeSyncSession) {
+      event.preventDefault();
+      maybeQuitWithSyncRunningPrompt().catch((error) => {
+        console.error('Failed to handle close during sync:', error);
+      });
+    }
+  });
+
   win.on('closed', () => {
     if (mainWindow === win) {
       mainWindow = null;
@@ -371,6 +436,15 @@ app.whenReady().then(async () => {
 
   stateFilePath = path.join(app.getPath('userData'), 'state.json');
   syncJournalPath = path.join(app.getPath('userData'), 'sync-recovery.json');
+
+  try {
+    const recovery = await cleanupSyncRecoveryArtifacts(syncJournalPath);
+    if (recovery && recovery.hadJournal && recovery.recoveredActiveEntries > 0) {
+      console.warn('Recovered and cleaned up sync artifacts after previous unexpected shutdown.', recovery);
+    }
+  } catch (error) {
+    console.error('Failed to recover sync artifacts from journal:', error);
+  }
 
   try {
     appState = await loadState(stateFilePath);
@@ -396,10 +470,17 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
   if (updateCheckerTimer) {
     clearInterval(updateCheckerTimer);
     updateCheckerTimer = null;
+  }
+
+  if (!allowImmediateQuit && activeSyncSession) {
+    event.preventDefault();
+    maybeQuitWithSyncRunningPrompt().catch((error) => {
+      console.error('Failed to handle app quit during sync:', error);
+    });
   }
 });
 
@@ -647,9 +728,13 @@ async function runWithSession(event, syncRun) {
     throw new Error('A sync operation is already running.');
   }
 
+  let resolveDone = null;
   const syncSession = {
     cancelRequested: false,
     paused: false,
+    donePromise: new Promise((resolve) => {
+      resolveDone = resolve;
+    }),
   };
   activeSyncSession = syncSession;
 
@@ -672,6 +757,9 @@ async function runWithSession(event, syncRun) {
   } finally {
     if (activeSyncSession === syncSession) {
       activeSyncSession = null;
+    }
+    if (typeof resolveDone === 'function') {
+      resolveDone();
     }
   }
 
