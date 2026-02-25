@@ -33,6 +33,10 @@ let lastRequestedWindowHeight = 0;
 let windowHeightUpdateQueued = false;
 let maxContentHeightLimit = window.innerHeight;
 let smoothedThroughputBps = 0;
+let displayedSpeedText = "";
+let displayedEtaText = "";
+let lastRateDisplayUpdateMs = 0;
+let lastPauseState = false;
 
 function messageFromError(error, fallback) {
   if (!error) {
@@ -81,6 +85,10 @@ function setSyncState(nextSyncing, paused = false) {
   isPaused = nextSyncing ? paused : false;
   if (!nextSyncing) {
     isCancellingSync = false;
+    displayedSpeedText = "";
+    displayedEtaText = "";
+    lastRateDisplayUpdateMs = 0;
+    lastPauseState = false;
   }
   updateControlStates();
 }
@@ -261,6 +269,42 @@ function relativePathText(relativeOrFilePath) {
   return raw || '(not recorded)';
 }
 
+function splitRelativePath(relativeOrFilePath) {
+  const text = relativePathText(relativeOrFilePath);
+  if (text === '(not recorded)') {
+    return { directory: '', fileName: text };
+  }
+
+  const normalized = text.replace(/\\/g, '/');
+  const lastSlash = normalized.lastIndexOf('/');
+  if (lastSlash === -1) {
+    return { directory: '', fileName: text };
+  }
+
+  return {
+    directory: normalized.slice(0, lastSlash + 1),
+    fileName: normalized.slice(lastSlash + 1),
+  };
+}
+
+function setPathCellContent(cell, relativeOrFilePath) {
+  const parts = splitRelativePath(relativeOrFilePath);
+  cell.className = 'path-cell';
+  cell.textContent = '';
+
+  if (parts.directory) {
+    const dirSpan = document.createElement('span');
+    dirSpan.className = 'path-dir';
+    dirSpan.textContent = parts.directory;
+    cell.appendChild(dirSpan);
+  }
+
+  const fileSpan = document.createElement('span');
+  fileSpan.className = 'path-file';
+  fileSpan.textContent = parts.fileName;
+  cell.appendChild(fileSpan);
+}
+
 function normalizeHistoryFiles(item) {
   const files = Array.isArray(item.files) ? item.files : [];
   const normalized = [];
@@ -368,12 +412,10 @@ function renderHistory(history) {
       timeCol.textContent = formatTimestamp(item.timestamp);
 
       const sourceCol = document.createElement('td');
-      sourceCol.className = 'tail-ellipsis';
-      sourceCol.textContent = relativePathText(filePath.sourceRelativePath);
+      setPathCellContent(sourceCol, filePath.sourceRelativePath);
 
       const destinationCol = document.createElement('td');
-      destinationCol.className = 'tail-ellipsis';
-      destinationCol.textContent = relativePathText(filePath.targetRelativePath);
+      setPathCellContent(destinationCol, filePath.targetRelativePath);
 
       row.appendChild(timeCol);
       row.appendChild(sourceCol);
@@ -455,12 +497,10 @@ function renderResults(plan) {
     const row = document.createElement('tr');
 
     const sourceCol = document.createElement('td');
-    sourceCol.className = 'tail-ellipsis';
-    sourceCol.textContent = relativePathText(item.sourceRelativePath);
+    setPathCellContent(sourceCol, item.sourceRelativePath);
 
     const targetCol = document.createElement('td');
-    targetCol.className = 'tail-ellipsis';
-    targetCol.textContent = relativePathText(item.targetRelativePath);
+    setPathCellContent(targetCol, item.targetRelativePath);
 
     const versionCol = document.createElement('td');
     versionCol.textContent = String(item.version);
@@ -512,23 +552,32 @@ function applySyncProgress(progress) {
   updateControlStates();
 
   const remainingBytes = Math.max(0, totalBytes - transferred);
-  const etaText = (!isPaused && smoothedThroughputBps > 0 && remainingBytes > 0)
+  const nextEtaText = (!isPaused && smoothedThroughputBps > 0 && remainingBytes > 0)
     ? ` ETA ${formatEta(remainingBytes / smoothedThroughputBps)}`
     : '';
 
   const bytesText = totalBytes > 0
     ? `(${formatBytesHuman(transferred)}/${formatBytesHuman(totalBytes)})`
     : '';
-  const speedText = !isPaused && smoothedThroughputBps > 0
+  const nextSpeedText = !isPaused && smoothedThroughputBps > 0
     ? ` @ ${formatSpeed(smoothedThroughputBps)}`
     : '';
+
+  const now = Date.now();
+  if (isPaused !== lastPauseState || (now - lastRateDisplayUpdateMs) >= 1000) {
+    displayedEtaText = nextEtaText;
+    displayedSpeedText = nextSpeedText;
+    lastRateDisplayUpdateMs = now;
+    lastPauseState = isPaused;
+  }
+
   const failText = failedCount > 0 ? ` Failed ${failedCount}` : '';
   const pauseText = isPaused ? ' Paused' : '';
 
   const activeText = activeCount > 1 ? ` (${activeCount} active)` : '';
   const target = progress.targetRelativePath || '(preparing)';
   const leftText = `Syncing ${displayIndex}/${total}${activeText}: ${target}`;
-  const rightText = `${bytesText}${speedText}${etaText}${failText}${pauseText}`.trim();
+  const rightText = `${bytesText}${displayedSpeedText}${displayedEtaText}${failText}${pauseText}`.trim();
 
   setSyncStatus(leftText, rightText);
 }

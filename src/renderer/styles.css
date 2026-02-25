@@ -358,11 +358,28 @@ td.empty {
 .history-table .col-source { width: calc((100% - 180px) / 2); }
 .history-table .col-destination { width: calc((100% - 180px) / 2); }
 
-/* Keep filename tail visible by truncating from the left. */
-td.tail-ellipsis {
+td.path-cell {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+
+td.path-cell .path-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   direction: rtl;
-  text-align: left;
   unicode-bidi: plaintext;
+}
+
+td.path-cell .path-file {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .modal-backdrop[hidden] {
