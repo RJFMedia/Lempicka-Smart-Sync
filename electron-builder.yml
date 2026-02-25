@@ -3,9 +3,6 @@ productName: Lempicka Smart Sync
 directories:
   output: release
   buildResources: build
-files:
-  - src/**/*
-  - package.json
 asar: true
 extraMetadata:
   main: src/main.js
