@@ -9,11 +9,20 @@
     "test": "node --test",
     "build": "bash scripts/package-macos-app.sh",
     "icon:mac": "bash scripts/build-mac-icon.sh",
-    "package:mac": "bash scripts/package-macos-app.sh"
+    "package:mac": "bash scripts/package-macos-app.sh",
+    "release:mac": "npm run icon:mac && electron-builder --mac dmg zip --publish never",
+    "release:publish:github": "bash scripts/publish-mac-update-github.sh",
+    "release:mac:github": "npm run release:publish:github",
+    "publish": "node scripts/publish-from-config.js"
   },
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^40.6.0"
+    "electron": "^40.6.0",
+    "electron-builder": "^26.0.12",
+    "js-yaml": "^4.1.1"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
   }
 }

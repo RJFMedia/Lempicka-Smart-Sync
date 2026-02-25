@@ -1,6 +1,8 @@
+const crypto = require('crypto');
 const { app, BrowserWindow, ipcMain, dialog, nativeImage, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { autoUpdater } = require('electron-updater');
 const { buildComparePlan, syncPlan: runSyncPlan } = require('./core/sync');
 const {
   loadState,
@@ -11,6 +13,13 @@ const {
   clearSyncHistory,
 } = require('./main/state-store');
 
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const APP_OPERATION = Object.freeze({
+  IDLE: 'idle',
+  COMPARING: 'comparing',
+  SYNCING: 'syncing',
+});
+
 let stateFilePath = null;
 let appState = normalizeState({});
 const appIconPath = path.join(__dirname, 'renderer', 'img', 'lempicka-icon.png');
@@ -19,6 +28,94 @@ app.name = 'Lempicka Smart Sync';
 let windowContentWidth = 1100;
 let activeSyncSession = null;
 let syncJournalPath = null;
+let mainWindow = null;
+let updateCheckerTimer = null;
+let autoUpdaterConfigured = false;
+let appOperation = APP_OPERATION.IDLE;
+let lastCompareContext = null;
+
+function normalizeRootForState(rawPath) {
+  const resolved = path.resolve(String(rawPath || ''));
+  if (process.platform === 'win32' || process.platform === 'darwin') {
+    return resolved.toLowerCase();
+  }
+  return resolved;
+}
+
+function buildPlanDigest(payload) {
+  const normalizedPlan = Array.isArray(payload && payload.plan)
+    ? payload.plan.map((item) => ({
+        sourcePath: String(item && item.sourcePath ? item.sourcePath : ''),
+        sourceRelativePath: String(item && item.sourceRelativePath ? item.sourceRelativePath : ''),
+        sourceSize: Number(item && item.sourceSize ? item.sourceSize : 0),
+        targetPath: String(item && item.targetPath ? item.targetPath : ''),
+        targetRelativePath: String(item && item.targetRelativePath ? item.targetRelativePath : ''),
+        version: Number(item && item.version ? item.version : 0),
+        destinationExists: Boolean(item && item.destinationExists),
+        destinationSize: Number.isFinite(Number(item && item.destinationSize))
+          ? Number(item.destinationSize)
+          : null,
+      }))
+    : [];
+
+  const normalizedDirs = Array.isArray(payload && payload.directoriesToCreate)
+    ? payload.directoriesToCreate.map((value) => String(value || '')).sort()
+    : [];
+
+  const body = {
+    leftRoot: normalizeRootForState(payload && payload.leftRoot ? payload.leftRoot : ''),
+    rightRoot: normalizeRootForState(payload && payload.rightRoot ? payload.rightRoot : ''),
+    plan: normalizedPlan,
+    directoriesToCreate: normalizedDirs,
+  };
+
+  return crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
+}
+
+function createCompareContext(compareResult) {
+  const digest = buildPlanDigest(compareResult);
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return {
+    token: `${nonce}.${digest.slice(0, 12)}`,
+    digest,
+    leftRoot: normalizeRootForState(compareResult.leftRoot),
+    rightRoot: normalizeRootForState(compareResult.rightRoot),
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function clearCompareContext() {
+  lastCompareContext = null;
+}
+
+function setOperation(next) {
+  appOperation = next;
+}
+
+function assertIdleOperation(actionLabel) {
+  if (appOperation !== APP_OPERATION.IDLE) {
+    throw new Error(`${actionLabel} is not allowed while another operation is running.`);
+  }
+}
+
+function verifyCompareContextForSync(payload) {
+  const compareToken = typeof payload.compareToken === 'string' ? payload.compareToken : '';
+  if (!compareToken || !lastCompareContext || compareToken !== lastCompareContext.token) {
+    throw new Error('Compare results are stale. Run Compare again before syncing.');
+  }
+
+  const leftRoot = normalizeRootForState(payload.leftRoot || '');
+  const rightRoot = normalizeRootForState(payload.rightRoot || '');
+  if (leftRoot !== lastCompareContext.leftRoot || rightRoot !== lastCompareContext.rightRoot) {
+    throw new Error('Selected directories changed after compare. Run Compare again before syncing.');
+  }
+
+  const payloadDigest = buildPlanDigest(payload);
+  if (payloadDigest !== lastCompareContext.digest) {
+    throw new Error('Sync plan changed after compare. Run Compare again before syncing.');
+  }
+}
+
 
 function getContentHeightBounds(workAreaHeight) {
   const maxContentHeight = Math.max(320, Number(workAreaHeight) - 20);
@@ -34,10 +131,122 @@ async function persistState() {
   return appState;
 }
 
+function getActiveWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    return mainWindow;
+  }
+  const existing = BrowserWindow.getAllWindows();
+  return existing.length > 0 ? existing[0] : null;
+}
+
+function broadcastUpdateStatus(status, data = {}) {
+  const win = getActiveWindow();
+  if (!win || win.isDestroyed()) {
+    return;
+  }
+
+  win.webContents.send('update-status', {
+    status,
+    ...data,
+  });
+}
+
+async function promptAndInstallUpdate(info) {
+  const win = getActiveWindow();
+  const versionText = info && info.version ? info.version : 'a new version';
+
+  if (!win || win.isDestroyed()) {
+    autoUpdater.quitAndInstall();
+    return;
+  }
+
+  const result = await dialog.showMessageBox(win, {
+    type: 'info',
+    buttons: ['Restart Now', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'Update Ready',
+    message: `Lempicka Smart Sync ${versionText} has been downloaded.`,
+    detail: 'Restart now to install the update.',
+  });
+
+  if (result.response === 0) {
+    autoUpdater.quitAndInstall();
+  }
+}
+
+function setupAutoUpdates() {
+  if (autoUpdaterConfigured || !app.isPackaged) {
+    return;
+  }
+
+  autoUpdaterConfigured = true;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('checking-for-update', () => {
+    broadcastUpdateStatus('checking');
+  });
+
+  autoUpdater.on('update-available', (info) => {
+    broadcastUpdateStatus('available', {
+      version: info && info.version ? info.version : '',
+      releaseNotes: info && info.releaseNotes ? info.releaseNotes : '',
+    });
+  });
+
+  autoUpdater.on('update-not-available', () => {
+    broadcastUpdateStatus('not-available');
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    broadcastUpdateStatus('download-progress', {
+      percent: Number(progress && progress.percent) || 0,
+      bytesPerSecond: Number(progress && progress.bytesPerSecond) || 0,
+      transferred: Number(progress && progress.transferred) || 0,
+      total: Number(progress && progress.total) || 0,
+    });
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    broadcastUpdateStatus('downloaded', {
+      version: info && info.version ? info.version : '',
+    });
+
+    promptAndInstallUpdate(info).catch((error) => {
+      console.error('Failed to prompt for update install:', error);
+    });
+  });
+
+  autoUpdater.on('error', (error) => {
+    const message = error && error.message ? error.message : 'Unknown update error.';
+    console.error('Auto update error:', message);
+    broadcastUpdateStatus('error', { message });
+  });
+
+  const check = async () => {
+    try {
+      await autoUpdater.checkForUpdates();
+    } catch (error) {
+      const message = error && error.message ? error.message : 'Update check failed.';
+      console.error('Update check failed:', message);
+      broadcastUpdateStatus('error', { message });
+    }
+  };
+
+  setTimeout(() => {
+    check().catch(() => undefined);
+  }, 5000);
+
+  updateCheckerTimer = setInterval(() => {
+    check().catch(() => undefined);
+  }, UPDATE_CHECK_INTERVAL_MS);
+}
+
 function createWindow() {
   const workArea = screen.getPrimaryDisplay().workAreaSize;
   const { minContentHeight, maxContentHeight } = getContentHeightBounds(workArea.height);
-  windowContentWidth = Math.min(1320, Math.max(960, workArea.width - 20));
+  windowContentWidth = Math.min(1100, Math.max(1040, workArea.width - 20));
   const initialHeight = Math.min(Math.max(760, minContentHeight), maxContentHeight);
 
   const windowOptions = {
@@ -66,7 +275,15 @@ function createWindow() {
     ...windowOptions,
   });
 
+  win.on('closed', () => {
+    if (mainWindow === win) {
+      mainWindow = null;
+    }
+  });
+
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  mainWindow = win;
+  return win;
 }
 
 app.whenReady().then(async () => {
@@ -85,6 +302,7 @@ app.whenReady().then(async () => {
   }
 
   createWindow();
+  setupAutoUpdates();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -96,6 +314,13 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
+  }
+});
+
+app.on('before-quit', () => {
+  if (updateCheckerTimer) {
+    clearInterval(updateCheckerTimer);
+    updateCheckerTimer = null;
   }
 });
 
@@ -114,6 +339,32 @@ ipcMain.handle('pick-directory', async (_, startPath) => {
 
 ipcMain.handle('get-app-state', async () => {
   return appState;
+});
+
+ipcMain.handle('check-for-updates', async () => {
+  if (!app.isPackaged) {
+    return { ok: false, reason: 'not-packaged' };
+  }
+
+  try {
+    await autoUpdater.checkForUpdates();
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'check-failed',
+      message: error && error.message ? error.message : 'Update check failed.',
+    };
+  }
+});
+
+ipcMain.handle('install-update-now', async () => {
+  if (!app.isPackaged) {
+    return { ok: false, reason: 'not-packaged' };
+  }
+
+  autoUpdater.quitAndInstall();
+  return { ok: true };
 });
 
 ipcMain.handle('clear-sync-history', async () => {
@@ -160,7 +411,18 @@ ipcMain.handle('get-window-size-limits', (event) => {
 });
 
 ipcMain.handle('set-selected-directories', async (_, payload) => {
-  appState = updateSelectedDirs(appState, payload || {});
+  const incoming = payload || {};
+  const nextLeft = normalizeRootForState(incoming.leftRoot || '');
+  const nextRight = normalizeRootForState(incoming.rightRoot || '');
+
+  if (
+    lastCompareContext
+    && (nextLeft !== lastCompareContext.leftRoot || nextRight !== lastCompareContext.rightRoot)
+  ) {
+    clearCompareContext();
+  }
+
+  appState = updateSelectedDirs(appState, incoming);
   try {
     await persistState();
   } catch (error) {
@@ -179,7 +441,24 @@ ipcMain.handle('compare-trees', async (_, payload) => {
     throw new Error('Both left and right directories are required.');
   }
 
-  return buildComparePlan(leftRoot, rightRoot);
+  assertIdleOperation('Compare');
+  setOperation(APP_OPERATION.COMPARING);
+
+  try {
+    const result = await buildComparePlan(leftRoot, rightRoot);
+    const compareContext = createCompareContext(result);
+    lastCompareContext = compareContext;
+
+    return {
+      ...result,
+      compareToken: compareContext.token,
+    };
+  } catch (error) {
+    clearCompareContext();
+    throw error;
+  } finally {
+    setOperation(APP_OPERATION.IDLE);
+  }
 });
 
 ipcMain.handle('cancel-sync', async () => {
@@ -310,24 +589,33 @@ async function runWithSession(event, syncRun) {
 ipcMain.handle('sync-plan', async (event, payload) => {
   const { plan, leftRoot, rightRoot, directoriesToCreate } = payload || {};
 
-  return runWithSession(event, async (syncSession) => {
-    return runSyncPlan(
-      plan,
-      (progress) => {
-        event.sender.send('sync-progress', progress);
-      },
-      {
-        leftRoot,
-        rightRoot,
-        directoriesToCreate,
-        shouldCancel: () => syncSession.cancelRequested,
-        shouldPause: () => syncSession.paused,
-        continueOnError: true,
-        retryCount: 2,
-        retryBaseDelayMs: 300,
-        maxParallelSmallFiles: 3,
-        journalPath: syncJournalPath,
-      }
-    );
-  });
+  assertIdleOperation('Sync');
+  verifyCompareContextForSync(payload || {});
+  clearCompareContext();
+  setOperation(APP_OPERATION.SYNCING);
+
+  try {
+    return await runWithSession(event, async (syncSession) => {
+      return runSyncPlan(
+        plan,
+        (progress) => {
+          event.sender.send('sync-progress', progress);
+        },
+        {
+          leftRoot,
+          rightRoot,
+          directoriesToCreate,
+          shouldCancel: () => syncSession.cancelRequested,
+          shouldPause: () => syncSession.paused,
+          continueOnError: true,
+          retryCount: 2,
+          retryBaseDelayMs: 300,
+          maxParallelSmallFiles: 3,
+          journalPath: syncJournalPath,
+        }
+      );
+    });
+  } finally {
+    setOperation(APP_OPERATION.IDLE);
+  }
 });

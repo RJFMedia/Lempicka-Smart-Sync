@@ -3,19 +3,26 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('treeSync', {
   pickDirectory: (startPath) => ipcRenderer.invoke('pick-directory', startPath),
   getAppState: () => ipcRenderer.invoke('get-app-state'),
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  installUpdateNow: () => ipcRenderer.invoke('install-update-now'),
   getWindowSizeLimits: () => ipcRenderer.invoke('get-window-size-limits'),
   setWindowContentHeight: (contentHeight) => ipcRenderer.invoke('set-window-content-height', contentHeight),
   clearSyncHistory: () => ipcRenderer.invoke('clear-sync-history'),
   setSelectedDirectories: (leftRoot, rightRoot) =>
     ipcRenderer.invoke('set-selected-directories', { leftRoot, rightRoot }),
   compareTrees: (leftRoot, rightRoot) => ipcRenderer.invoke('compare-trees', { leftRoot, rightRoot }),
-  syncPlan: (plan, leftRoot, rightRoot, directoriesToCreate) =>
-    ipcRenderer.invoke('sync-plan', { plan, leftRoot, rightRoot, directoriesToCreate }),
+  syncPlan: (plan, leftRoot, rightRoot, directoriesToCreate, compareToken) =>
+    ipcRenderer.invoke('sync-plan', { plan, leftRoot, rightRoot, directoriesToCreate, compareToken }),
   cancelSync: () => ipcRenderer.invoke('cancel-sync'),
   toggleSyncPause: () => ipcRenderer.invoke('toggle-sync-pause'),
   onSyncProgress: (callback) => {
     const listener = (_, payload) => callback(payload);
     ipcRenderer.on('sync-progress', listener);
     return () => ipcRenderer.removeListener('sync-progress', listener);
+  },
+  onUpdateStatus: (callback) => {
+    const listener = (_, payload) => callback(payload);
+    ipcRenderer.on('update-status', listener);
+    return () => ipcRenderer.removeListener('update-status', listener);
   },
 });

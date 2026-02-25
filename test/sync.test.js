@@ -243,6 +243,41 @@ test('syncPlan restores original destination file when cancelled during replacem
   });
 });
 
+test('syncPlan reports bytesCopied for successful files only when cancelled mid-file', async () => {
+  await withTempDirs(async ({ left, right }) => {
+    const firstContent = 'first';
+    const largeSecond = Buffer.alloc(96 * 1024 * 1024, 'z');
+
+    await writeFile(left, 'first_v1.txt', firstContent);
+    await writeFile(left, 'second_v1.txt', largeSecond);
+
+    const compare = await buildComparePlan(left, right);
+    let cancelRequested = false;
+
+    await assert.rejects(
+      () => syncPlan(compare.plan, (progress) => {
+        if (
+          progress
+          && progress.phase === 'copying'
+          && progress.targetRelativePath === 'second.txt'
+        ) {
+          cancelRequested = true;
+        }
+      }, {
+        shouldCancel: () => cancelRequested,
+      }),
+      (error) => {
+        assert.equal(error && error.code, 'SYNC_CANCELLED');
+        const partial = error && error.details ? error.details.partialResult : null;
+        assert.ok(partial);
+        assert.equal(partial.copied, 1);
+        assert.equal(partial.bytesCopied, Buffer.byteLength(firstContent));
+        return true;
+      }
+    );
+  });
+});
+
 test('sync recovery journal can resume remaining files after cancellation', async () => {
   await withTempDirs(async ({ left, right, root }) => {
     await writeFile(left, 'one_v1.txt', '1111');
@@ -284,5 +319,99 @@ test('sync recovery journal can resume remaining files after cancellation', asyn
     const two = await fs.readFile(path.join(right, 'two.txt'), 'utf8');
     assert.equal(one, '1111');
     assert.equal(two, '2222');
+  });
+});
+
+test('buildComparePlan rejects root and overlapping directories', async () => {
+  await withTempDirs(async ({ left, right }) => {
+    const filesystemRoot = path.parse(process.cwd()).root;
+
+    await assert.rejects(
+      () => buildComparePlan(filesystemRoot, right),
+      /unsafe source directory/i
+    );
+
+    await assert.rejects(
+      () => buildComparePlan(left, left),
+      /non-overlapping/i
+    );
+
+    const nestedDestination = path.join(left, 'nested-destination');
+    await fs.mkdir(nestedDestination, { recursive: true });
+
+    await assert.rejects(
+      () => buildComparePlan(left, nestedDestination),
+      /non-overlapping/i
+    );
+  });
+});
+
+test('buildComparePlan rejects symlink roots', { skip: process.platform === 'win32' }, async () => {
+  await withTempDirs(async ({ left, right, root }) => {
+    const linkedLeft = path.join(root, 'left-link');
+    await fs.symlink(left, linkedLeft);
+
+    await assert.rejects(
+      () => buildComparePlan(linkedLeft, right),
+      /cannot be a symlink/i
+    );
+  });
+});
+
+test('buildComparePlan ignores symlink files and directories', { skip: process.platform === 'win32' }, async () => {
+  await withTempDirs(async ({ left, right, root }) => {
+    await writeFile(left, 'real/keep_v2.txt', 'keep');
+
+    const externalFile = path.join(root, 'outside-file_v9.txt');
+    await fs.writeFile(externalFile, 'linked');
+    await fs.symlink(externalFile, path.join(left, 'linked-file_v9.txt'));
+
+    const externalDir = path.join(root, 'outside-dir');
+    await fs.mkdir(externalDir, { recursive: true });
+    await fs.writeFile(path.join(externalDir, 'inside_v4.txt'), 'inside');
+    await fs.symlink(externalDir, path.join(left, 'linked-dir'));
+
+    const result = await buildComparePlan(left, right);
+    assert.equal(result.plan.length, 1);
+    assert.equal(result.plan[0].targetRelativePath, path.normalize('real/keep.txt'));
+  });
+});
+
+test('syncPlan rejects plan paths that escape selected roots', async () => {
+  await withTempDirs(async ({ left, right, root }) => {
+    await writeFile(left, 'clip_v1.txt', 'abc');
+    const compare = await buildComparePlan(left, right);
+
+    const mutatedPlan = compare.plan.map((item) => ({ ...item }));
+    mutatedPlan[0].targetPath = path.join(root, 'outside.txt');
+
+    await assert.rejects(
+      () => syncPlan(mutatedPlan, undefined, {
+        leftRoot: left,
+        rightRoot: right,
+      }),
+      /escapes selected destination directory/i
+    );
+  });
+});
+
+test('syncPlan cleans temporary backup and write files after success', async () => {
+  await withTempDirs(async ({ left, right }) => {
+    await writeFile(left, 'clip_v2.txt', 'new-content-longer');
+    await writeFile(right, 'clip.txt', 'old');
+
+    const compare = await buildComparePlan(left, right);
+    const result = await syncPlan(compare.plan, undefined, {
+      leftRoot: left,
+      rightRoot: right,
+    });
+
+    assert.equal(result.copied, 1);
+
+    const rightEntries = await fs.readdir(right);
+    assert.equal(
+      rightEntries.some((name) => /\.lempicka-(tmp|write)-/.test(name)),
+      false
+    );
   });
 });

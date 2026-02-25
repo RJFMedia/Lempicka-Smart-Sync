@@ -1,0 +1,7 @@
+# Copy this file to config/publish.local.yml and fill in your own values.
+# The *.local.yml file is gitignored and should never be committed.
+
+github:
+  token: ghp_replace_with_your_token
+  owner: your-github-username-or-org
+  repo: Lempicka-Smart-Sync

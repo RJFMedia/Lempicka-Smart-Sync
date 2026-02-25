@@ -16,6 +16,7 @@ const appRoot = document.querySelector('.app');
 
 let currentPlan = [];
 let currentDirectoriesToCreate = [];
+let currentCompareToken = '';
 let isBusy = false;
 let isSyncing = false;
 let isCancellingSync = false;
@@ -34,6 +35,37 @@ function messageFromError(error, fallback) {
     return error.message;
   }
   return fallback;
+}
+
+function handleUpdateStatus(update) {
+  if (!update || typeof update !== 'object') {
+    return;
+  }
+  if (isSyncing || isBusy) {
+    return;
+  }
+
+  switch (update.status) {
+    case 'checking':
+      setPlainStatus('Checking for app updates...');
+      break;
+    case 'available':
+      setPlainStatus(`Update available: ${update.version || 'new version'} (downloading).`);
+      break;
+    case 'download-progress': {
+      const pct = Number(update.percent) || 0;
+      setPlainStatus(`Downloading update: ${pct.toFixed(1)}%`);
+      break;
+    }
+    case 'downloaded':
+      setPlainStatus(`Update downloaded: ${update.version || 'new version'}.`);
+      break;
+    case 'error':
+      setPlainStatus(`Update check error: ${update.message || 'Unknown error.'}`);
+      break;
+    default:
+      break;
+  }
 }
 
 function setSyncReport(message) {
@@ -73,6 +105,17 @@ function setSyncState(nextSyncing, paused = false) {
   isPaused = nextSyncing ? paused : false;
   if (!nextSyncing) {
     isCancellingSync = false;
+  }
+  updateControlStates();
+}
+
+function invalidateCompareState(statusMessage) {
+  currentPlan = [];
+  currentDirectoriesToCreate = [];
+  currentCompareToken = '';
+  clearResults('Comparison is out of date. Run compare again.');
+  if (typeof statusMessage === 'string' && statusMessage.trim()) {
+    setPlainStatus(statusMessage);
   }
   updateControlStates();
 }
@@ -462,18 +505,27 @@ function applySyncProgress(progress) {
 
 async function compareDirectories(leftRoot, rightRoot) {
   const result = await window.treeSync.compareTrees(leftRoot, rightRoot);
-  currentPlan = result.plan;
+  if (!result || typeof result !== 'object' || typeof result.compareToken !== 'string') {
+    throw new Error('Invalid compare response from main process.');
+  }
+
+  currentPlan = Array.isArray(result.plan) ? result.plan : [];
   currentDirectoriesToCreate = Array.isArray(result.directoriesToCreate)
     ? result.directoriesToCreate
     : [];
+  currentCompareToken = result.compareToken;
   renderResults(currentPlan);
   return result;
 }
 
 async function pickDirectory(inputEl) {
+  const previous = inputEl.value.trim();
   const selected = await window.treeSync.pickDirectory(inputEl.value || undefined);
   if (selected) {
     inputEl.value = selected;
+    if (selected.trim() !== previous) {
+      invalidateCompareState('Directory changed. Run compare again.');
+    }
     await saveSelectedDirectories();
   }
 }
@@ -525,8 +577,7 @@ async function refreshCompareAfterSync(result) {
       setPlainStatus(`${outcomeText} Compare refreshed: no files need syncing.`);
     }
   } catch (error) {
-    currentPlan = [];
-    currentDirectoriesToCreate = [];
+    invalidateCompareState();
     clearResults('Comparison failed.');
     setPlainStatus(
       `${outcomeText} Compare refresh failed: ${messageFromError(error, 'Unexpected compare error.')}`
@@ -554,6 +605,16 @@ clearHistoryBtn.addEventListener('click', async () => {
 
 pickLeftBtn.addEventListener('click', () => pickDirectory(leftPathInput));
 pickRightBtn.addEventListener('click', () => pickDirectory(rightPathInput));
+
+leftPathInput.addEventListener('change', async () => {
+  invalidateCompareState('Directory changed. Run compare again.');
+  await saveSelectedDirectories();
+});
+
+rightPathInput.addEventListener('change', async () => {
+  invalidateCompareState('Directory changed. Run compare again.');
+  await saveSelectedDirectories();
+});
 
 compareBtn.addEventListener('click', async () => {
   const leftRoot = leftPathInput.value.trim();
@@ -583,8 +644,7 @@ compareBtn.addEventListener('click', async () => {
       setPlainStatus('Compare complete: no files need syncing.');
     }
   } catch (error) {
-    currentPlan = [];
-    currentDirectoriesToCreate = [];
+    invalidateCompareState();
     clearResults('Comparison failed.');
     setPlainStatus(`Compare failed: ${messageFromError(error, 'Unexpected compare error.')}`);
   } finally {
@@ -669,6 +729,11 @@ syncBtn.addEventListener('click', async () => {
     return;
   }
 
+  if (!currentCompareToken) {
+    setPlainStatus('Compare is out of date. Run compare again before syncing.');
+    return;
+  }
+
   if (currentDirectoriesToCreate.length > 0) {
     const folderList = currentDirectoriesToCreate.map((folder) => `- ${folder}`).join('\n');
     const proceed = window.confirm(
@@ -689,7 +754,8 @@ syncBtn.addEventListener('click', async () => {
       currentPlan,
       leftPathInput.value.trim(),
       rightPathInput.value.trim(),
-      currentDirectoriesToCreate
+      currentDirectoriesToCreate,
+      currentCompareToken
     );
   });
 });
@@ -721,6 +787,9 @@ async function initializeFromPersistedState() {
 }
 
 updateControlStates();
+window.treeSync.onUpdateStatus((payload) => {
+  handleUpdateStatus(payload);
+});
 initializeFromPersistedState();
 updateResultsPanelHeights();
 

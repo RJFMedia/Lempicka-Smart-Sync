@@ -31,6 +31,21 @@ const DEFAULT_SMALL_FILE_THRESHOLD_BYTES = 4 * 1024 * 1024;
 const DEFAULT_MAX_PARALLEL_SMALL_FILES = 3;
 const PAUSE_POLL_MS = 120;
 
+const SENSITIVE_ROOT_PATHS = [
+  '/System',
+  '/Library',
+  '/bin',
+  '/sbin',
+  '/usr',
+  '/etc',
+  '/private/etc',
+  '/dev',
+  '/cores',
+  '/proc',
+  '/var/db',
+  '/private/var/db',
+];
+
 class TreeSyncError extends Error {
   constructor(code, message, details = {}) {
     super(message);
@@ -74,21 +89,152 @@ function wrapFilesystemError(action, targetPath, error, details = {}) {
 }
 
 async function ensureDirectoryAvailable(rootPath, accessMode, label) {
+  const normalizedInput = typeof rootPath === 'string' ? rootPath.trim() : '';
+  if (!normalizedInput) {
+    throw new TreeSyncError(
+      'INVALID_DIRECTORY',
+      `${label} is required.`,
+      { path: rootPath, label }
+    );
+  }
+
   try {
-    const stat = await fs.stat(rootPath);
-    if (!stat.isDirectory()) {
+    const linkStat = await fs.lstat(normalizedInput);
+    if (linkStat.isSymbolicLink()) {
       throw new TreeSyncError(
-        'INVALID_DIRECTORY',
-        `${label} is not a directory: "${rootPath}".`,
-        { path: rootPath, label }
+        'UNSAFE_DIRECTORY',
+        `${label} cannot be a symlink: "${normalizedInput}".`,
+        { path: normalizedInput, label }
       );
     }
-    await fs.access(rootPath, accessMode);
+
+    if (!linkStat.isDirectory()) {
+      throw new TreeSyncError(
+        'INVALID_DIRECTORY',
+        `${label} is not a directory: "${normalizedInput}".`,
+        { path: normalizedInput, label }
+      );
+    }
+
+    await fs.access(normalizedInput, accessMode);
+    const realPath = await fs.realpath(normalizedInput);
+
+    return {
+      inputPath: normalizedInput,
+      realPath,
+    };
   } catch (error) {
     if (error instanceof TreeSyncError) {
       throw error;
     }
-    throw wrapFilesystemError(`Accessing ${label}`, rootPath, error, { label });
+    throw wrapFilesystemError(`Accessing ${label}`, normalizedInput || String(rootPath || ''), error, { label });
+  }
+}
+
+function normalizedPathForCompare(rawPath) {
+  const resolved = path.resolve(String(rawPath || ''));
+  if (process.platform === 'win32' || process.platform === 'darwin') {
+    return resolved.toLowerCase();
+  }
+  return resolved;
+}
+
+function isSameOrDescendantPath(candidatePath, parentPath) {
+  const candidate = normalizedPathForCompare(candidatePath);
+  const parent = normalizedPathForCompare(parentPath);
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function isSensitiveRootPath(rootPath) {
+  const normalizedRoot = normalizedPathForCompare(rootPath);
+  const filesystemRoot = normalizedPathForCompare(path.parse(rootPath).root || '/');
+  if (normalizedRoot === filesystemRoot) {
+    return true;
+  }
+
+  for (const sensitivePath of SENSITIVE_ROOT_PATHS) {
+    const sensitiveNormalized = normalizedPathForCompare(sensitivePath);
+    if (normalizedRoot === sensitiveNormalized || isSameOrDescendantPath(normalizedRoot, sensitiveNormalized)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function guardUnsafeRootPair(leftRoot, rightRoot) {
+  if (isSensitiveRootPath(leftRoot)) {
+    throw new TreeSyncError(
+      'UNSAFE_DIRECTORY',
+      `Unsafe source directory selected: "${leftRoot}".`,
+      { leftRoot, rightRoot }
+    );
+  }
+
+  if (isSensitiveRootPath(rightRoot)) {
+    throw new TreeSyncError(
+      'UNSAFE_DIRECTORY',
+      `Unsafe destination directory selected: "${rightRoot}".`,
+      { leftRoot, rightRoot }
+    );
+  }
+
+  if (isSameOrDescendantPath(leftRoot, rightRoot) || isSameOrDescendantPath(rightRoot, leftRoot)) {
+    throw new TreeSyncError(
+      'UNSAFE_DIRECTORY',
+      'Source and destination directories must be distinct and non-overlapping.',
+      { leftRoot, rightRoot }
+    );
+  }
+}
+
+async function validateRootPair(leftRoot, rightRoot, options = {}) {
+  const leftMeta = await ensureDirectoryAvailable(
+    leftRoot,
+    options.leftAccessMode || fsConstants.R_OK,
+    options.leftLabel || 'source directory'
+  );
+  const rightMeta = await ensureDirectoryAvailable(
+    rightRoot,
+    options.rightAccessMode || fsConstants.R_OK,
+    options.rightLabel || 'destination directory'
+  );
+
+  guardUnsafeRootPair(leftMeta.realPath, rightMeta.realPath);
+
+  return {
+    leftRoot: leftMeta.realPath,
+    rightRoot: rightMeta.realPath,
+  };
+}
+
+function assertPlanPathsWithinRoots(plan, leftRoot, rightRoot) {
+  const normalizedLeft = leftRoot ? normalizedPathForCompare(leftRoot) : '';
+  const normalizedRight = rightRoot ? normalizedPathForCompare(rightRoot) : '';
+
+  for (const item of plan) {
+    if (normalizedLeft) {
+      const sourcePath = normalizedPathForCompare(path.resolve(item.sourcePath));
+      if (!isSameOrDescendantPath(sourcePath, normalizedLeft)) {
+        throw new TreeSyncError(
+          'INVALID_PLAN',
+          `Source path escapes selected source directory: "${item.sourcePath}".`,
+          { sourcePath: item.sourcePath, leftRoot }
+        );
+      }
+    }
+
+    if (normalizedRight) {
+      const targetPath = normalizedPathForCompare(path.resolve(item.targetPath));
+      if (!isSameOrDescendantPath(targetPath, normalizedRight)) {
+        throw new TreeSyncError(
+          'INVALID_PLAN',
+          `Destination path escapes selected destination directory: "${item.targetPath}".`,
+          { targetPath: item.targetPath, rightRoot }
+        );
+      }
+    }
   }
 }
 
@@ -309,6 +455,8 @@ async function copyFileWithProgress(sourcePath, targetPath, onChunk, options = {
         onChunk(bytesRead);
       }
     }
+
+    await targetHandle.sync();
   } finally {
     await Promise.all([
       sourceHandle.close().catch(() => undefined),
@@ -321,6 +469,13 @@ function makeTemporaryBackupPath(targetPath) {
   const base = path.basename(targetPath);
   const unique = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   return path.join(dir, `.${base}.lempicka-tmp-${unique}`);
+}
+
+function makeTemporaryWritePath(targetPath) {
+  const dir = path.dirname(targetPath);
+  const base = path.basename(targetPath);
+  const unique = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  return path.join(dir, `.${base}.lempicka-write-${unique}`);
 }
 
 async function walkFiles(root, relative = '') {
@@ -339,19 +494,43 @@ async function walkFiles(root, relative = '') {
     }
 
     const relPath = path.join(relative, entry.name);
-    if (entry.isDirectory()) {
+    const fullPath = path.join(root, relPath);
+
+    let isDirectory = entry.isDirectory();
+    let isFile = entry.isFile();
+    let isSymlink = entry.isSymbolicLink();
+    let entryStat = null;
+
+    if (!isDirectory && !isFile && !isSymlink) {
+      try {
+        entryStat = await fs.lstat(fullPath);
+      } catch (error) {
+        throw wrapFilesystemError('Reading file metadata', fullPath, error);
+      }
+      isDirectory = entryStat.isDirectory();
+      isFile = entryStat.isFile();
+      isSymlink = entryStat.isSymbolicLink();
+    }
+
+    if (isSymlink) {
+      continue;
+    }
+
+    if (isDirectory) {
       files.push(...(await walkFiles(root, relPath)));
       continue;
     }
 
-    if (entry.isFile() && hasNormalExtension(entry.name)) {
-      const fullPath = path.join(root, relPath);
-      let stat;
-      try {
-        stat = await fs.stat(fullPath);
-      } catch (error) {
-        throw wrapFilesystemError('Reading file metadata', fullPath, error);
+    if (isFile && hasNormalExtension(entry.name)) {
+      let stat = entryStat;
+      if (!stat) {
+        try {
+          stat = await fs.lstat(fullPath);
+        } catch (error) {
+          throw wrapFilesystemError('Reading file metadata', fullPath, error);
+        }
       }
+
       files.push({
         fullPath,
         relativePath: relPath,
@@ -387,11 +566,16 @@ function parseVersionedName(fileName) {
 }
 
 async function buildComparePlan(leftRoot, rightRoot) {
-  await ensureDirectoryAvailable(leftRoot, fsConstants.R_OK, 'source directory');
-  await ensureDirectoryAvailable(rightRoot, fsConstants.R_OK, 'destination directory');
+  const validatedRoots = await validateRootPair(leftRoot, rightRoot, {
+    leftAccessMode: fsConstants.R_OK,
+    rightAccessMode: fsConstants.R_OK,
+  });
 
-  const leftFiles = await walkFiles(leftRoot);
-  const rightFiles = await walkFiles(rightRoot);
+  const safeLeftRoot = validatedRoots.leftRoot;
+  const safeRightRoot = validatedRoots.rightRoot;
+
+  const leftFiles = await walkFiles(safeLeftRoot);
+  const rightFiles = await walkFiles(safeRightRoot);
 
   const rightSizeByRelativePath = new Map();
   for (const rf of rightFiles) {
@@ -415,7 +599,7 @@ async function buildComparePlan(leftRoot, rightRoot) {
         sourceFullPath: lf.fullPath,
         sourceSize: lf.size,
         targetRelativePath,
-        targetFullPath: path.join(rightRoot, targetRelativePath),
+        targetFullPath: path.join(safeRightRoot, targetRelativePath),
         targetFileName: parsed.targetFileName,
         version: parsed.version,
         isVersioned: parsed.isVersioned,
@@ -456,7 +640,7 @@ async function buildComparePlan(leftRoot, rightRoot) {
   }
 
   for (const relativeDir of requiredTargetDirs) {
-    const fullDir = path.join(rightRoot, relativeDir);
+    const fullDir = path.join(safeRightRoot, relativeDir);
     try {
       const stat = await fs.stat(fullDir);
       if (!stat.isDirectory()) {
@@ -481,8 +665,8 @@ async function buildComparePlan(leftRoot, rightRoot) {
   directoriesToCreate.sort((a, b) => a.localeCompare(b));
 
   return {
-    leftRoot,
-    rightRoot,
+    leftRoot: safeLeftRoot,
+    rightRoot: safeRightRoot,
     plan,
     directoriesToCreate,
     totalCandidates: bestByTargetRelativePath.size,
@@ -614,17 +798,34 @@ async function recoverActiveEntriesFromJournal(state) {
 
     const targetPath = typeof entry.targetPath === 'string' ? entry.targetPath : '';
     const backupPath = typeof entry.backupPath === 'string' ? entry.backupPath : '';
+    const tempPath = typeof entry.tempPath === 'string' ? entry.tempPath : '';
+    const stage = typeof entry.stage === 'string' ? entry.stage : 'unknown';
+
     if (!targetPath) {
       continue;
     }
 
-    try {
-      await fs.unlink(targetPath);
-    } catch (error) {
-      if (!error || error.code !== 'ENOENT') {
-        // Best effort recovery cleanup.
+    const safeUnlink = async (filePath) => {
+      if (!filePath) {
+        return;
       }
+      try {
+        await fs.unlink(filePath);
+      } catch (error) {
+        if (!error || error.code !== 'ENOENT') {
+          // Best effort cleanup.
+        }
+      }
+    };
+
+    if (stage === 'swapped') {
+      await safeUnlink(tempPath);
+      await safeUnlink(backupPath);
+      continue;
     }
+
+    await safeUnlink(tempPath);
+    await safeUnlink(targetPath);
 
     if (backupPath) {
       try {
@@ -707,7 +908,7 @@ async function syncPlan(plan, onProgress, options = {}) {
 
   let completed = 0;
   let started = 0;
-  let bytesTransferred = 0;
+  let committedBytes = 0;
   let totalBytes = 0;
   let bytesSinceRateTick = 0;
   let lastRateTickAt = Date.now();
@@ -717,9 +918,9 @@ async function syncPlan(plan, onProgress, options = {}) {
   const succeededFiles = [];
   const activeTransfers = new Map();
 
-  const leftRoot = typeof options.leftRoot === 'string' ? options.leftRoot : '';
-  const rightRoot = typeof options.rightRoot === 'string' ? options.rightRoot : '';
-  const syncLogPath = leftRoot ? path.join(leftRoot, 'sync-history.log') : '';
+  let leftRoot = typeof options.leftRoot === 'string' ? options.leftRoot : '';
+  let rightRoot = typeof options.rightRoot === 'string' ? options.rightRoot : '';
+  let syncLogPath = leftRoot ? path.join(leftRoot, 'sync-history.log') : '';
   const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : () => false;
   const shouldPause = typeof options.shouldPause === 'function' ? options.shouldPause : () => false;
   const continueOnError = Boolean(options.continueOnError);
@@ -743,6 +944,29 @@ async function syncPlan(plan, onProgress, options = {}) {
   const directoriesToCreate = Array.isArray(options.directoriesToCreate)
     ? options.directoriesToCreate.filter((value) => typeof value === 'string' && value.trim())
     : [];
+
+  if (leftRoot && rightRoot) {
+    const validatedRoots = await validateRootPair(leftRoot, rightRoot, {
+      leftAccessMode: fsConstants.R_OK,
+      rightAccessMode: fsConstants.R_OK | fsConstants.W_OK,
+    });
+    leftRoot = validatedRoots.leftRoot;
+    rightRoot = validatedRoots.rightRoot;
+  } else if (leftRoot) {
+    const validatedLeft = await ensureDirectoryAvailable(leftRoot, fsConstants.R_OK, 'source directory');
+    leftRoot = validatedLeft.realPath;
+  } else if (rightRoot) {
+    const validatedRight = await ensureDirectoryAvailable(
+      rightRoot,
+      fsConstants.R_OK | fsConstants.W_OK,
+      'destination directory'
+    );
+    rightRoot = validatedRight.realPath;
+  }
+
+  syncLogPath = leftRoot ? path.join(leftRoot, 'sync-history.log') : '';
+
+  assertPlanPathsWithinRoots(normalizedPlan, leftRoot, rightRoot);
 
   for (const item of normalizedPlan) {
     const hintedSize = Number(item.sourceSize);
@@ -795,7 +1019,7 @@ async function syncPlan(plan, onProgress, options = {}) {
       return;
     }
     journalState.updatedAt = new Date().toISOString();
-    journalState.bytesTransferred = bytesTransferred;
+    journalState.bytesTransferred = committedBytes;
     journalWriteChain = journalWriteChain.then(() => writeSyncJournal(journalPath, journalState));
     await journalWriteChain;
   };
@@ -849,15 +1073,20 @@ async function syncPlan(plan, onProgress, options = {}) {
       bytesSinceRateTick = 0;
       lastRateTickAt = now;
     }
-
     let currentFileBytes = 0;
     let currentFileTotalBytes = 0;
+    let activeBytes = 0;
     const itemKey = item ? item.targetPath : '';
-    if (itemKey && activeTransfers.has(itemKey)) {
-      const transferState = activeTransfers.get(itemKey);
-      currentFileBytes = transferState.bytesTransferred;
-      currentFileTotalBytes = transferState.totalBytes;
+    for (const [activeKey, transferState] of activeTransfers.entries()) {
+      const transferred = Number(transferState && transferState.bytesTransferred) || 0;
+      activeBytes += transferred;
+      if (activeKey === itemKey) {
+        currentFileBytes = transferred;
+        currentFileTotalBytes = Number(transferState && transferState.totalBytes) || 0;
+      }
     }
+
+    const reportedBytesTransferred = committedBytes + activeBytes;
 
     try {
       onProgress({
@@ -867,7 +1096,7 @@ async function syncPlan(plan, onProgress, options = {}) {
         failed: failed.length,
         total,
         totalBytes,
-        bytesTransferred,
+        bytesTransferred: reportedBytesTransferred,
         throughputBps: lastThroughputBps,
         targetRelativePath: item ? item.targetRelativePath : '',
         currentFileBytes,
@@ -929,6 +1158,7 @@ async function syncPlan(plan, onProgress, options = {}) {
     emitProgress('copying', item, { force: true });
 
     let backupPath = '';
+    let tempPath = '';
 
     journalState.activeEntries[item.targetPath] = {
       sourcePath: item.sourcePath,
@@ -936,10 +1166,21 @@ async function syncPlan(plan, onProgress, options = {}) {
       sourceRelativePath: item.sourceRelativePath,
       targetRelativePath: item.targetRelativePath,
       backupPath: '',
+      tempPath: '',
+      stage: 'preparing',
       startedAt: new Date().toISOString(),
       attempt: attempt + 1,
     };
     await queueJournalWrite();
+
+    const updateActiveEntry = async (patch) => {
+      const activeEntry = journalState.activeEntries[item.targetPath];
+      if (!activeEntry) {
+        return;
+      }
+      Object.assign(activeEntry, patch || {});
+      await queueJournalWrite();
+    };
 
     try {
       try {
@@ -958,7 +1199,7 @@ async function syncPlan(plan, onProgress, options = {}) {
 
       let destinationStat = null;
       try {
-        destinationStat = await fs.stat(item.targetPath);
+        destinationStat = await fs.lstat(item.targetPath);
       } catch (error) {
         if (!error || error.code !== 'ENOENT') {
           throw error;
@@ -979,15 +1220,16 @@ async function syncPlan(plan, onProgress, options = {}) {
 
         backupPath = makeTemporaryBackupPath(item.targetPath);
         await fs.rename(item.targetPath, backupPath);
-        journalState.activeEntries[item.targetPath].backupPath = backupPath;
-        await queueJournalWrite();
+        await updateActiveEntry({ backupPath, stage: 'backed-up' });
       }
+
+      tempPath = makeTemporaryWritePath(item.targetPath);
+      await updateActiveEntry({ tempPath, stage: 'writing-temp' });
 
       await copyFileWithProgress(
         item.sourcePath,
-        item.targetPath,
+        tempPath,
         (chunkBytes) => {
-          bytesTransferred += chunkBytes;
           bytesSinceRateTick += chunkBytes;
           transferState.bytesTransferred += chunkBytes;
           emitProgress('copying', item);
@@ -1001,6 +1243,11 @@ async function syncPlan(plan, onProgress, options = {}) {
           },
         }
       );
+
+      await updateActiveEntry({ stage: 'swapping' });
+      await fs.rename(tempPath, item.targetPath);
+      tempPath = '';
+      await updateActiveEntry({ tempPath: '', stage: 'swapped' });
 
       await tryPreserveCreationDate(item.sourcePath, item.targetPath);
 
@@ -1022,6 +1269,7 @@ async function syncPlan(plan, onProgress, options = {}) {
         }
       }
 
+      committedBytes += transferState.bytesTransferred;
       completed += 1;
       succeededFiles.push({
         sourceRelativePath: item.sourceRelativePath,
@@ -1041,15 +1289,25 @@ async function syncPlan(plan, onProgress, options = {}) {
 
       emitProgress('copied', item, { force: true });
     } catch (error) {
-      try {
-        await fs.unlink(item.targetPath);
-      } catch (cleanupError) {
-        if (!cleanupError || cleanupError.code !== 'ENOENT') {
-          // Best effort cleanup.
+      if (tempPath) {
+        try {
+          await fs.unlink(tempPath);
+        } catch (cleanupError) {
+          if (!cleanupError || cleanupError.code !== 'ENOENT') {
+            // Best effort cleanup.
+          }
         }
       }
 
       if (backupPath) {
+        try {
+          await fs.unlink(item.targetPath);
+        } catch (cleanupError) {
+          if (!cleanupError || cleanupError.code !== 'ENOENT') {
+            // Best effort cleanup.
+          }
+        }
+
         try {
           await fs.rename(backupPath, item.targetPath);
           backupPath = '';
@@ -1063,6 +1321,14 @@ async function syncPlan(plan, onProgress, options = {}) {
               fsCode: restoreError && restoreError.code ? restoreError.code : 'UNKNOWN',
             }
           );
+        }
+      } else {
+        try {
+          await fs.unlink(item.targetPath);
+        } catch (cleanupError) {
+          if (!cleanupError || cleanupError.code !== 'ENOENT') {
+            // Best effort cleanup.
+          }
         }
       }
 
@@ -1119,13 +1385,13 @@ async function syncPlan(plan, onProgress, options = {}) {
   const buildResult = () => {
     const durationMs = Math.max(0, Date.now() - syncStartMs);
     const averageThroughputBps = durationMs > 0
-      ? Math.round((bytesTransferred * 1000) / durationMs)
+      ? Math.round((committedBytes * 1000) / durationMs)
       : 0;
 
     return {
       copied: completed,
       total,
-      bytesCopied: bytesTransferred,
+      bytesCopied: committedBytes,
       totalBytes,
       failed,
       succeededFiles,

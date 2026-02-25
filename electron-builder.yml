@@ -1,0 +1,27 @@
+appId: com.lempicka.smartsync
+productName: Lempicka Smart Sync
+directories:
+  output: release
+  buildResources: build
+files:
+  - src/**/*
+  - package.json
+asar: true
+extraMetadata:
+  main: src/main.js
+mac:
+  icon: build/icon.icns
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch:
+        - universal
+    - target: zip
+      arch:
+        - universal
+  artifactName: ${productName}-${version}-${arch}.${ext}
+publish:
+  provider: github
+  owner: ${env.GH_OWNER}
+  repo: ${env.GH_REPO}
+  releaseType: release
