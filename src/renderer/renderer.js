@@ -12,6 +12,7 @@ const historyBody = document.getElementById('historyBody');
 const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 const progressBar = document.getElementById('progressBar');
 const resultPanels = Array.from(document.querySelectorAll('.results'));
+const appRoot = document.querySelector('.app');
 
 let currentPlan = [];
 let currentDirectoriesToCreate = [];
@@ -39,6 +40,7 @@ function setSyncReport(message) {
   const text = String(message || '').trim();
   syncReport.hidden = text.length === 0;
   syncReport.textContent = text;
+  queueWindowHeightUpdate();
 }
 
 function updateControlStates() {
@@ -78,6 +80,7 @@ function setSyncState(nextSyncing, paused = false) {
 function setPlainStatus(message) {
   statusText.classList.remove('sync-live');
   statusText.textContent = message;
+  queueWindowHeightUpdate();
 }
 
 function setSyncStatus(leftText, rightText) {
@@ -94,6 +97,7 @@ function setSyncStatus(leftText, rightText) {
 
   statusText.appendChild(left);
   statusText.appendChild(right);
+  queueWindowHeightUpdate();
 }
 
 function formatSize(bytes) {
@@ -204,7 +208,6 @@ function normalizeHistoryFiles(item) {
 }
 
 function updateResultsPanelHeights() {
-  const appRoot = document.querySelector('.app');
   if (!appRoot || resultPanels.length === 0) {
     return;
   }
@@ -213,7 +216,7 @@ function updateResultsPanelHeights() {
   const appBottomPadding = Number.parseFloat(appStyle.paddingBottom) || 0;
 
   const firstPanelTop = resultPanels[0].getBoundingClientRect().top;
-  const heightBudget = Math.max(window.innerHeight, maxContentHeightLimit);
+  const heightBudget = Math.max(320, maxContentHeightLimit);
   const availableForAllPanels = Math.max(
     200,
     heightBudget - firstPanelTop - appBottomPadding - 10
@@ -254,9 +257,12 @@ function queueWindowHeightUpdate() {
   windowHeightUpdateQueued = true;
   window.requestAnimationFrame(async () => {
     windowHeightUpdateQueued = false;
-    const doc = document.documentElement;
-    const body = document.body;
-    const desired = Math.ceil(Math.max(doc.scrollHeight, body.scrollHeight));
+    if (!appRoot) {
+      return;
+    }
+
+    const appRect = appRoot.getBoundingClientRect();
+    const desired = Math.ceil(appRect.height);
     if (!desired || Math.abs(desired - lastRequestedWindowHeight) < 2) {
       return;
     }
@@ -276,6 +282,7 @@ function renderHistory(history) {
 
   if (!history.length) {
     clearHistory('No syncs have been recorded yet.');
+    updateResultsPanelHeights();
     return;
   }
 
@@ -367,6 +374,7 @@ function renderResults(plan) {
 
   if (!plan.length) {
     clearResults('No files need syncing.');
+    updateResultsPanelHeights();
     return;
   }
 
@@ -715,4 +723,12 @@ async function initializeFromPersistedState() {
 updateControlStates();
 initializeFromPersistedState();
 updateResultsPanelHeights();
+
+if (appRoot && typeof ResizeObserver !== 'undefined') {
+  const resizeObserver = new ResizeObserver(() => {
+    updateResultsPanelHeights();
+  });
+  resizeObserver.observe(appRoot);
+}
+
 window.addEventListener('resize', updateResultsPanelHeights);

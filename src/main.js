@@ -20,6 +20,12 @@ let windowContentWidth = 1100;
 let activeSyncSession = null;
 let syncJournalPath = null;
 
+function getContentHeightBounds(workAreaHeight) {
+  const maxContentHeight = Math.max(320, Number(workAreaHeight) - 20);
+  const minContentHeight = Math.min(320, maxContentHeight);
+  return { minContentHeight, maxContentHeight };
+}
+
 async function persistState() {
   if (!stateFilePath) {
     return appState;
@@ -30,8 +36,9 @@ async function persistState() {
 
 function createWindow() {
   const workArea = screen.getPrimaryDisplay().workAreaSize;
+  const { minContentHeight, maxContentHeight } = getContentHeightBounds(workArea.height);
   windowContentWidth = Math.min(1320, Math.max(960, workArea.width - 20));
-  const initialHeight = Math.min(Math.max(760, 600), workArea.height - 40);
+  const initialHeight = Math.min(Math.max(760, minContentHeight), maxContentHeight);
 
   const windowOptions = {
     title: '',
@@ -40,8 +47,8 @@ function createWindow() {
     minWidth: windowContentWidth,
     maxWidth: windowContentWidth,
     height: initialHeight,
-    minHeight: 500,
-    maxHeight: workArea.height - 20,
+    minHeight: minContentHeight,
+    maxHeight: maxContentHeight,
     resizable: false,
     fullscreenable: false,
     webPreferences: {
@@ -122,13 +129,13 @@ ipcMain.handle('set-window-content-height', (event, contentHeight) => {
   }
 
   const display = screen.getDisplayMatching(win.getBounds());
-  const maxHeight = Math.max(500, display.workAreaSize.height - 20);
+  const { minContentHeight, maxContentHeight } = getContentHeightBounds(display.workAreaSize.height);
   const requested = Number(contentHeight);
   if (!Number.isFinite(requested)) {
     return null;
   }
 
-  const targetHeight = Math.max(500, Math.min(maxHeight, Math.ceil(requested)));
+  const targetHeight = Math.max(minContentHeight, Math.min(maxContentHeight, Math.ceil(requested)));
   const [, currentContentHeight] = win.getContentSize();
   if (Math.abs(currentContentHeight - targetHeight) < 2) {
     return targetHeight;
@@ -141,13 +148,13 @@ ipcMain.handle('set-window-content-height', (event, contentHeight) => {
 ipcMain.handle('get-window-size-limits', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win) {
-    return { minContentHeight: 500, maxContentHeight: 800 };
+    return { minContentHeight: 320, maxContentHeight: 800 };
   }
 
   const display = screen.getDisplayMatching(win.getBounds());
-  const maxContentHeight = Math.max(500, display.workAreaSize.height - 20);
+  const { minContentHeight, maxContentHeight } = getContentHeightBounds(display.workAreaSize.height);
   return {
-    minContentHeight: 500,
+    minContentHeight,
     maxContentHeight,
   };
 });

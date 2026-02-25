@@ -11,7 +11,6 @@
 
 body {
   margin: 0;
-  min-height: 100vh;
   position: relative;
   background: #070b14;
   overflow: hidden;
@@ -187,7 +186,7 @@ progress {
   padding: 10px;
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto;
   gap: 8px;
   max-height: var(--panel-max-height);
   overflow: hidden;
