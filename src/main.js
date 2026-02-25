@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { app, BrowserWindow, ipcMain, dialog, nativeImage, screen, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, nativeImage, screen, Menu, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { autoUpdater } = require('electron-updater');
@@ -442,6 +442,11 @@ ipcMain.handle('validate-directory-path', async (_, candidatePath) => {
 
 ipcMain.handle('get-app-state', async () => {
   return appState;
+});
+
+ipcMain.handle('copy-text', async (_, text) => {
+  clipboard.writeText(typeof text === 'string' ? text : String(text || ''));
+  return { ok: true };
 });
 
 ipcMain.handle('check-for-updates', async () => {

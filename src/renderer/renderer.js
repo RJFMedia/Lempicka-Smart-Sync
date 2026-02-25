@@ -15,6 +15,11 @@ const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 const progressBar = document.getElementById('progressBar');
 const resultPanels = Array.from(document.querySelectorAll('.results'));
 const appRoot = document.querySelector('.app');
+const folderCreateModal = document.getElementById('folderCreateModal');
+const folderCreateList = document.getElementById('folderCreateList');
+const folderCreateMessage = document.getElementById('folderCreateMessage');
+const confirmFolderCreateBtn = document.getElementById('confirmFolderCreateBtn');
+const cancelFolderCreateBtn = document.getElementById('cancelFolderCreateBtn');
 
 let currentPlan = [];
 let currentDirectoriesToCreate = [];
@@ -148,6 +153,60 @@ function formatEta(seconds) {
     return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   }
   return `${minutes}:${String(secs).padStart(2, '0')}`;
+}
+
+function promptForFolderCreation(directoriesToCreate) {
+  if (!folderCreateModal || !folderCreateList || !confirmFolderCreateBtn || !cancelFolderCreateBtn) {
+    return Promise.resolve(true);
+  }
+
+  return new Promise((resolve) => {
+    const folderList = directoriesToCreate.map((folder) => '- ' + folder).join('\n');
+    folderCreateList.textContent = folderList || '(none)';
+    if (folderCreateMessage) {
+      folderCreateMessage.textContent = directoriesToCreate.length + ' folder(s) will be created at destination.';
+    }
+
+    folderCreateModal.hidden = false;
+
+    const cleanup = () => {
+      folderCreateModal.hidden = true;
+      confirmFolderCreateBtn.removeEventListener('click', onConfirm);
+      cancelFolderCreateBtn.removeEventListener('click', onCancel);
+      folderCreateModal.removeEventListener('click', onBackdropClick);
+      document.removeEventListener('keydown', onKeydown);
+    };
+
+    const onConfirm = () => {
+      cleanup();
+      resolve(true);
+    };
+
+    const onCancel = () => {
+      cleanup();
+      resolve(false);
+    };
+
+    const onBackdropClick = (event) => {
+      if (event.target === folderCreateModal) {
+        onCancel();
+      }
+    };
+
+    const onKeydown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCancel();
+      }
+    };
+
+    confirmFolderCreateBtn.addEventListener('click', onConfirm);
+    cancelFolderCreateBtn.addEventListener('click', onCancel);
+    folderCreateModal.addEventListener('click', onBackdropClick);
+    document.addEventListener('keydown', onKeydown);
+
+    confirmFolderCreateBtn.focus();
+  });
 }
 
 function formatDuration(ms) {
@@ -502,13 +561,79 @@ async function pickDirectory(inputEl) {
 }
 
 function hasFilePayload(event) {
-  const types = event && event.dataTransfer && event.dataTransfer.types
-    ? Array.from(event.dataTransfer.types)
-    : [];
-  return types.includes('Files');
+  const dataTransfer = event && event.dataTransfer;
+  if (!dataTransfer) {
+    return false;
+  }
+
+  const types = dataTransfer.types ? Array.from(dataTransfer.types) : [];
+  if (dataTransfer.files && dataTransfer.files.length > 0) {
+    return true;
+  }
+
+  return types.includes('Files') || types.includes('text/uri-list') || types.includes('public.file-url');
 }
 
-function extractDroppedPath(event) {
+function decodePlainDroppedPath(rawValue) {
+  const candidate = String(rawValue || '').trim();
+  if (!candidate) {
+    return null;
+  }
+
+  const line = candidate
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => entry && !entry.startsWith('#'));
+
+  if (!line) {
+    return null;
+  }
+
+  const unquoted = line.replace(/^"(.*)"$/, '$1').trim();
+  if (/^\//.test(unquoted) || /^[A-Za-z]:[\\/]/.test(unquoted)) {
+    return unquoted;
+  }
+
+  return null;
+}
+
+function decodeDroppedFileUrl(rawValue) {
+  const candidate = String(rawValue || '').trim();
+  if (!candidate) {
+    return null;
+  }
+
+  const line = candidate
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => entry && !entry.startsWith('#'));
+
+  if (!line || !/^file:/i.test(line)) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(line);
+    if (parsed.protocol !== 'file:') {
+      return null;
+    }
+
+    let pathname = decodeURIComponent(parsed.pathname || '');
+    if (!pathname) {
+      return null;
+    }
+
+    if (/^\/[A-Za-z]:/.test(pathname)) {
+      pathname = pathname.slice(1);
+    }
+
+    return pathname;
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function extractDroppedPath(event) {
   const dataTransfer = event && event.dataTransfer;
   if (!dataTransfer) {
     return null;
@@ -519,6 +644,51 @@ function extractDroppedPath(event) {
     if (file && typeof file.path === 'string' && file.path.trim()) {
       return file.path.trim();
     }
+
+    if (file && window.treeSync && typeof window.treeSync.getPathForFile === 'function') {
+      const resolved = window.treeSync.getPathForFile(file);
+      if (typeof resolved === 'string' && resolved.trim()) {
+        return resolved.trim();
+      }
+    }
+  }
+
+  const items = dataTransfer.items ? Array.from(dataTransfer.items) : [];
+  for (const item of items) {
+    if (!item || item.kind !== 'file' || typeof item.getAsFile !== 'function') {
+      continue;
+    }
+
+    const file = item.getAsFile();
+    if (!file) {
+      continue;
+    }
+
+    if (typeof file.path === 'string' && file.path.trim()) {
+      return file.path.trim();
+    }
+
+    if (window.treeSync && typeof window.treeSync.getPathForFile === 'function') {
+      const resolved = window.treeSync.getPathForFile(file);
+      if (typeof resolved === 'string' && resolved.trim()) {
+        return resolved.trim();
+      }
+    }
+  }
+
+  const uriPayload =
+    dataTransfer.getData('text/uri-list') ||
+    dataTransfer.getData('public.file-url') ||
+    dataTransfer.getData('text/plain');
+
+  const decodedUriPath = decodeDroppedFileUrl(uriPayload);
+  if (decodedUriPath) {
+    return decodedUriPath;
+  }
+
+  const decodedPlainPath = decodePlainDroppedPath(uriPayload);
+  if (decodedPlainPath) {
+    return decodedPlainPath;
   }
 
   return null;
@@ -605,7 +775,7 @@ function attachDirectoryDropHandlers(targetEl, inputEl, label) {
       return;
     }
 
-    const droppedPath = extractDroppedPath(event);
+    const droppedPath = await extractDroppedPath(event);
     if (!droppedPath) {
       setPlainStatus(label + ' drop rejected: no directory path found.');
       return;
@@ -712,6 +882,34 @@ document.addEventListener('dragover', (event) => {
 
 document.addEventListener('drop', (event) => {
   if (hasFilePayload(event)) {
+    event.preventDefault();
+  }
+});
+
+document.addEventListener('keydown', async (event) => {
+  const key = String(event.key || '').toLowerCase();
+  if (key !== 'c' || (!event.metaKey && !event.ctrlKey) || event.altKey) {
+    return;
+  }
+
+  const focusedSelection = getFocusedSelectionText();
+  if (focusedSelection) {
+    try {
+      await window.treeSync.copyText(focusedSelection);
+      event.preventDefault();
+      return;
+    } catch (_error) {
+      return;
+    }
+  }
+
+  const active = document.activeElement;
+  if (active && active.isContentEditable) {
+    return;
+  }
+
+  const copied = await copySelectionToClipboard();
+  if (copied) {
     event.preventDefault();
   }
 });
@@ -835,10 +1033,7 @@ syncBtn.addEventListener('click', async () => {
   }
 
   if (currentDirectoriesToCreate.length > 0) {
-    const folderList = currentDirectoriesToCreate.map((folder) => `- ${folder}`).join('\n');
-    const proceed = window.confirm(
-      `The following new folders will be created:\n\n${folderList}\n\nContinue with sync?`
-    );
+    const proceed = await promptForFolderCreation(currentDirectoriesToCreate);
     if (!proceed) {
       setPlainStatus('Sync cancelled.');
       return;
@@ -859,6 +1054,45 @@ syncBtn.addEventListener('click', async () => {
     );
   });
 });
+
+function getFocusedSelectionText() {
+  const active = document.activeElement;
+  if (!active) {
+    return '';
+  }
+
+  if (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') {
+    const value = typeof active.value === 'string' ? active.value : '';
+    const start = Number.isInteger(active.selectionStart) ? active.selectionStart : 0;
+    const end = Number.isInteger(active.selectionEnd) ? active.selectionEnd : start;
+    if (end > start) {
+      return value.slice(start, end);
+    }
+  }
+
+  return '';
+}
+
+function getSelectedText() {
+  if (window.getSelection) {
+    return String(window.getSelection() || '').trim();
+  }
+  return '';
+}
+
+async function copySelectionToClipboard() {
+  const selectedText = getSelectedText();
+  if (!selectedText) {
+    return false;
+  }
+
+  try {
+    await window.treeSync.copyText(selectedText);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
 
 async function initializeFromPersistedState() {
   try {

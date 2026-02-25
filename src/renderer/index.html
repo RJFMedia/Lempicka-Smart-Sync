@@ -98,6 +98,18 @@
       </section>
     </main>
 
+    <div id="folderCreateModal" class="modal-backdrop" hidden>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="folderCreateTitle">
+        <h3 id="folderCreateTitle">The following new folders will be created</h3>
+        <p id="folderCreateMessage">Please confirm before continuing.</p>
+        <pre id="folderCreateList" class="modal-list"></pre>
+        <div class="modal-actions">
+          <button id="confirmFolderCreateBtn" type="button">Continue</button>
+          <button id="cancelFolderCreateBtn" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+
     <script src="renderer.js"></script>
   </body>
 </html>

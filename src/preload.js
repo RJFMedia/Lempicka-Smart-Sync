@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('treeSync', {
   pickDirectory: (startPath) => ipcRenderer.invoke('pick-directory', startPath),
@@ -13,6 +13,14 @@ contextBridge.exposeInMainWorld('treeSync', {
   syncPlan: (plan, leftRoot, rightRoot, directoriesToCreate, compareToken) =>
     ipcRenderer.invoke('sync-plan', { plan, leftRoot, rightRoot, directoriesToCreate, compareToken }),
   cancelSync: () => ipcRenderer.invoke('cancel-sync'),
+  copyText: (text) => ipcRenderer.invoke('copy-text', text),
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file) || '';
+    } catch (_error) {
+      return '';
+    }
+  },
   toggleSyncPause: () => ipcRenderer.invoke('toggle-sync-pause'),
   onSyncProgress: (callback) => {
     const listener = (_, payload) => callback(payload);
