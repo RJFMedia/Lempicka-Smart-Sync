@@ -22,3 +22,41 @@ npm start
 ```bash
 npm run build
 ```
+
+## Publish Notarized macOS Updates
+
+`npm run publish` now expects both GitHub release credentials and Apple notarization credentials.
+
+1. Install a valid `Developer ID Application` certificate in Keychain Access.
+2. Copy `config/publish.local.example.yml` to `config/publish.local.yml`.
+3. Fill in `github` values and one `apple` notarization method.
+4. Optionally set `signing.cscName` if auto-discovery does not pick your cert.
+5. Validate config without publishing:
+
+```bash
+node scripts/publish-from-config.js --dry-run
+```
+
+6. Publish:
+
+```bash
+npm run publish
+```
+
+### Recommended Notarization Auth (Keychain Profile)
+
+Store notary credentials in macOS Keychain, then reference only the profile name in YAML:
+
+```bash
+xcrun notarytool store-credentials "lempicka-notary" \
+  --apple-id "you@example.com" \
+  --team-id "TEAMID1234" \
+  --password "xxxx-xxxx-xxxx-xxxx"
+```
+
+Then set:
+
+```yaml
+apple:
+  keychainProfile: lempicka-notary
+```
