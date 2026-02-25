@@ -1,6 +1,6 @@
 {
   "name": "lempicka-smart-sync",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "productName": "Lempicka Smart Sync",
   "description": "Desktop app to compare and sync versioned files between directory trees",
   "main": "src/main.js",
