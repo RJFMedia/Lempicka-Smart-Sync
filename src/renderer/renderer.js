@@ -292,17 +292,21 @@ function setPathCellContent(cell, relativeOrFilePath) {
   cell.className = 'path-cell';
   cell.textContent = '';
 
+  const content = document.createElement('span');
+  content.className = 'path-cell-content';
+
   if (parts.directory) {
     const dirSpan = document.createElement('span');
     dirSpan.className = 'path-dir';
     dirSpan.textContent = parts.directory;
-    cell.appendChild(dirSpan);
+    content.appendChild(dirSpan);
   }
 
   const fileSpan = document.createElement('span');
   fileSpan.className = 'path-file';
   fileSpan.textContent = parts.fileName;
-  cell.appendChild(fileSpan);
+  content.appendChild(fileSpan);
+  cell.appendChild(content);
 }
 
 function normalizeHistoryFiles(item) {

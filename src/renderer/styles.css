@@ -358,13 +358,14 @@ td.empty {
 .history-table .col-source { width: calc((100% - 180px) / 2); }
 .history-table .col-destination { width: calc((100% - 180px) / 2); }
 
-td.path-cell {
+.path-cell-content {
   display: flex;
   align-items: baseline;
   min-width: 0;
+  width: 100%;
 }
 
-td.path-cell .path-dir {
+.path-cell-content .path-dir {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -374,7 +375,7 @@ td.path-cell .path-dir {
   unicode-bidi: plaintext;
 }
 
-td.path-cell .path-file {
+.path-cell-content .path-file {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
