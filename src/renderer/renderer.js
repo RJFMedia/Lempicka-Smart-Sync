@@ -37,37 +37,6 @@ function messageFromError(error, fallback) {
   return fallback;
 }
 
-function handleUpdateStatus(update) {
-  if (!update || typeof update !== 'object') {
-    return;
-  }
-  if (isSyncing || isBusy) {
-    return;
-  }
-
-  switch (update.status) {
-    case 'checking':
-      setPlainStatus('Checking for app updates...');
-      break;
-    case 'available':
-      setPlainStatus(`Update available: ${update.version || 'new version'} (downloading).`);
-      break;
-    case 'download-progress': {
-      const pct = Number(update.percent) || 0;
-      setPlainStatus(`Downloading update: ${pct.toFixed(1)}%`);
-      break;
-    }
-    case 'downloaded':
-      setPlainStatus(`Update downloaded: ${update.version || 'new version'}.`);
-      break;
-    case 'error':
-      setPlainStatus(`Update check error: ${update.message || 'Unknown error.'}`);
-      break;
-    default:
-      break;
-  }
-}
-
 function setSyncReport(message) {
   const text = String(message || '').trim();
   syncReport.hidden = text.length === 0;
@@ -787,9 +756,6 @@ async function initializeFromPersistedState() {
 }
 
 updateControlStates();
-window.treeSync.onUpdateStatus((payload) => {
-  handleUpdateStatus(payload);
-});
 initializeFromPersistedState();
 updateResultsPanelHeights();
 

@@ -4,6 +4,19 @@ directories:
   output: release
   buildResources: build
 asar: true
+files:
+  - "**/*"
+  - "!dist/**"
+  - "!release/**"
+  - "!release-slim-test/**"
+  - "!test/**"
+  - "!scripts/**"
+  - "!config/**"
+  - "!build/**"
+  - "!README.md"
+  - "!*.md"
+  - "!*.log"
+  - "!**/*.map"
 extraMetadata:
   main: src/main.js
 mac:
@@ -12,10 +25,10 @@ mac:
   target:
     - target: dmg
       arch:
-        - universal
+        - arm64
     - target: zip
       arch:
-        - universal
+        - arm64
   artifactName: ${productName}-${version}-${arch}.${ext}
 publish:
   provider: github

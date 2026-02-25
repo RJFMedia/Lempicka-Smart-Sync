@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { app, BrowserWindow, ipcMain, dialog, nativeImage, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, nativeImage, screen, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { autoUpdater } = require('electron-updater');
@@ -31,6 +31,7 @@ let syncJournalPath = null;
 let mainWindow = null;
 let updateCheckerTimer = null;
 let autoUpdaterConfigured = false;
+let manualUpdateCheckInProgress = false;
 let appOperation = APP_OPERATION.IDLE;
 let lastCompareContext = null;
 
@@ -139,17 +140,6 @@ function getActiveWindow() {
   return existing.length > 0 ? existing[0] : null;
 }
 
-function broadcastUpdateStatus(status, data = {}) {
-  const win = getActiveWindow();
-  if (!win || win.isDestroyed()) {
-    return;
-  }
-
-  win.webContents.send('update-status', {
-    status,
-    ...data,
-  });
-}
 
 async function promptAndInstallUpdate(info) {
   const win = getActiveWindow();
@@ -175,6 +165,135 @@ async function promptAndInstallUpdate(info) {
   }
 }
 
+async function checkForUpdatesSilently() {
+  if (!app.isPackaged) {
+    return;
+  }
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch (error) {
+    const message = error && error.message ? error.message : 'Update check failed.';
+    console.error('Silent update check failed:', message);
+  }
+}
+
+async function checkForUpdatesManually() {
+  const win = getActiveWindow();
+  if (!app.isPackaged) {
+    await dialog.showMessageBox(win, {
+      type: 'info',
+      title: 'Check for Updates',
+      message: 'Updates are available only in packaged builds of Lempicka Smart Sync.',
+    });
+    return;
+  }
+
+  if (manualUpdateCheckInProgress) {
+    return;
+  }
+  manualUpdateCheckInProgress = true;
+
+  try {
+    const outcome = await new Promise((resolve) => {
+      let settled = false;
+      const settle = (value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(value);
+      };
+
+      const onAvailable = (info) => {
+        settle({
+          type: 'available',
+          message: 'Update ' + (info && info.version ? info.version : 'available') + ' is downloading in the background.',
+        });
+      };
+      const onNotAvailable = () => {
+        settle({
+          type: 'none',
+          message: 'Lempicka Smart Sync ' + app.getVersion() + ' is up to date.',
+        });
+      };
+      const onError = (error) => {
+        settle({
+          type: 'error',
+          message: error && error.message ? error.message : 'Update check failed.',
+        });
+      };
+
+      const cleanup = () => {
+        autoUpdater.removeListener('update-available', onAvailable);
+        autoUpdater.removeListener('update-not-available', onNotAvailable);
+        autoUpdater.removeListener('error', onError);
+      };
+
+      autoUpdater.once('update-available', onAvailable);
+      autoUpdater.once('update-not-available', onNotAvailable);
+      autoUpdater.once('error', onError);
+
+      autoUpdater.checkForUpdates().catch((error) => {
+        settle({
+          type: 'error',
+          message: error && error.message ? error.message : 'Update check failed.',
+        });
+      });
+    });
+
+    await dialog.showMessageBox(win, {
+      type: outcome.type === 'error' ? 'error' : 'info',
+      title: 'Check for Updates',
+      message: outcome.message,
+    });
+  } finally {
+    manualUpdateCheckInProgress = false;
+  }
+}
+
+function setupApplicationMenu() {
+  if (process.platform !== 'darwin') {
+    return;
+  }
+
+  const template = [
+    {
+      label: app.name,
+      submenu: [
+        { role: 'about', label: 'About Lempicka Smart Sync' },
+        {
+          label: 'Check for Updates...',
+          click: () => {
+            checkForUpdatesManually().catch((error) => {
+              console.error('Manual update check failed:', error);
+            });
+          },
+        },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    },
+    {
+      role: 'window',
+      submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        { type: 'separator' },
+        { role: 'front' },
+      ],
+    },
+  ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 function setupAutoUpdates() {
   if (autoUpdaterConfigured || !app.isPackaged) {
     return;
@@ -183,63 +302,22 @@ function setupAutoUpdates() {
   autoUpdaterConfigured = true;
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
-
-  autoUpdater.on('checking-for-update', () => {
-    broadcastUpdateStatus('checking');
-  });
-
-  autoUpdater.on('update-available', (info) => {
-    broadcastUpdateStatus('available', {
-      version: info && info.version ? info.version : '',
-      releaseNotes: info && info.releaseNotes ? info.releaseNotes : '',
-    });
-  });
-
-  autoUpdater.on('update-not-available', () => {
-    broadcastUpdateStatus('not-available');
-  });
-
-  autoUpdater.on('download-progress', (progress) => {
-    broadcastUpdateStatus('download-progress', {
-      percent: Number(progress && progress.percent) || 0,
-      bytesPerSecond: Number(progress && progress.bytesPerSecond) || 0,
-      transferred: Number(progress && progress.transferred) || 0,
-      total: Number(progress && progress.total) || 0,
-    });
-  });
-
   autoUpdater.on('update-downloaded', (info) => {
-    broadcastUpdateStatus('downloaded', {
-      version: info && info.version ? info.version : '',
-    });
-
     promptAndInstallUpdate(info).catch((error) => {
       console.error('Failed to prompt for update install:', error);
     });
   });
-
   autoUpdater.on('error', (error) => {
     const message = error && error.message ? error.message : 'Unknown update error.';
     console.error('Auto update error:', message);
-    broadcastUpdateStatus('error', { message });
   });
 
-  const check = async () => {
-    try {
-      await autoUpdater.checkForUpdates();
-    } catch (error) {
-      const message = error && error.message ? error.message : 'Update check failed.';
-      console.error('Update check failed:', message);
-      broadcastUpdateStatus('error', { message });
-    }
-  };
-
   setTimeout(() => {
-    check().catch(() => undefined);
+    checkForUpdatesSilently().catch(() => undefined);
   }, 5000);
 
   updateCheckerTimer = setInterval(() => {
-    check().catch(() => undefined);
+    checkForUpdatesSilently().catch(() => undefined);
   }, UPDATE_CHECK_INTERVAL_MS);
 }
 
@@ -302,6 +380,7 @@ app.whenReady().then(async () => {
   }
 
   createWindow();
+  setupApplicationMenu();
   setupAutoUpdates();
 
   app.on('activate', () => {

@@ -21,7 +21,7 @@ body::before {
   position: fixed;
   inset: 0;
   background-image: url("./img/lempicka.jpg");
-  background-position: center;
+  background-position: top center;
   background-repeat: no-repeat;
   background-size: cover;
   opacity: 0.4;

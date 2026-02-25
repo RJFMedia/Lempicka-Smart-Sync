@@ -3,8 +3,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('treeSync', {
   pickDirectory: (startPath) => ipcRenderer.invoke('pick-directory', startPath),
   getAppState: () => ipcRenderer.invoke('get-app-state'),
-  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
-  installUpdateNow: () => ipcRenderer.invoke('install-update-now'),
   getWindowSizeLimits: () => ipcRenderer.invoke('get-window-size-limits'),
   setWindowContentHeight: (contentHeight) => ipcRenderer.invoke('set-window-content-height', contentHeight),
   clearSyncHistory: () => ipcRenderer.invoke('clear-sync-history'),
@@ -19,10 +17,5 @@ contextBridge.exposeInMainWorld('treeSync', {
     const listener = (_, payload) => callback(payload);
     ipcRenderer.on('sync-progress', listener);
     return () => ipcRenderer.removeListener('sync-progress', listener);
-  },
-  onUpdateStatus: (callback) => {
-    const listener = (_, payload) => callback(payload);
-    ipcRenderer.on('update-status', listener);
-    return () => ipcRenderer.removeListener('update-status', listener);
-  },
+  }
 });
