@@ -1,62 +1,27 @@
 # Lempicka Smart Sync
 
-A desktop app to compare two directory trees and sync versioned files from the left tree into the right tree.
+Lempicka Smart Sync compares a source directory (versioned files) with a destination directory (unversioned files), then syncs only files that need updating.
 
-## Behavior
+## How It Works
 
-- Scans the left and right trees recursively.
-- Left-side files may be versioned as `name_v###.ext`.
-- A versioned file maps to the right-side target `name.ext` (same relative directory).
-- When multiple left candidates map to the same target, the highest version number wins.
-- A file is copied only when the chosen left candidate size differs from the right target size, or when the right target is missing.
+- Source files can be versioned like `name_v001.ext`.
+- Destination files are unversioned like `name.ext`.
+- If multiple source versions exist, the highest version is selected.
+- A file is synced when the destination file is missing or has a different size.
+- Missing destination subfolders are created during sync (with confirmation before creation).
 
-## Run Locally
+## Using the App
 
-```bash
-npm install
-npm start
-```
+1. Select a **Source Directory (versioned)**.
+2. Select a **Destination Directory (unversioned)**.
+3. Click **Compare** to preview files that will be copied.
+4. Review the compare table and total bytes to transfer.
+5. Click **Sync** to start transfer.
+6. Use **Cancel** (or Pause/Resume if shown) to control an in-progress sync.
 
-## Build Local macOS App
+## Safety Behavior
 
-```bash
-npm run build
-```
-
-## Publish Notarized macOS Updates
-
-`npm run publish` now expects both GitHub release credentials and Apple notarization credentials.
-
-1. Install a valid `Developer ID Application` certificate in Keychain Access.
-2. Copy `config/publish.local.example.yml` to `config/publish.local.yml`.
-3. Fill in `github` values and one `apple` notarization method.
-4. Optionally set `signing.cscName` if auto-discovery does not pick your cert.
-5. Validate config without publishing:
-
-```bash
-node scripts/publish-from-config.js --dry-run
-```
-
-6. Publish:
-
-```bash
-npm run publish
-```
-
-### Recommended Notarization Auth (Keychain Profile)
-
-Store notary credentials in macOS Keychain, then reference only the profile name in YAML:
-
-```bash
-xcrun notarytool store-credentials "lempicka-notary" \
-  --apple-id "you@example.com" \
-  --team-id "TEAMID1234" \
-  --password "xxxx-xxxx-xxxx-xxxx"
-```
-
-Then set:
-
-```yaml
-apple:
-  keychainProfile: lempicka-notary
-```
+- Hidden/system files and symlinks are ignored.
+- Root/overlapping/sensitive directory selections are blocked.
+- If a sync is interrupted, already completed files remain valid and compare can be run again to continue remaining work.
+- A `sync-history.log` file is appended in the source root with per-file sync records.

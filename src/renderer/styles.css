@@ -76,6 +76,17 @@ label {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 6px;
+  border-radius: 8px;
+}
+
+.path-input-wrap.drop-active {
+  outline: 1px dashed #6ea8ff;
+  box-shadow: 0 0 0 2px rgba(110, 168, 255, 0.2);
+}
+
+.path-input-wrap.drop-active input[type="text"] {
+  border-color: #6ea8ff;
+  background: #162744;
 }
 
 input[type="text"] {

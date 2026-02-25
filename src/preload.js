@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('treeSync', {
   pickDirectory: (startPath) => ipcRenderer.invoke('pick-directory', startPath),
+  validateDirectoryPath: (candidatePath) => ipcRenderer.invoke('validate-directory-path', candidatePath),
   getAppState: () => ipcRenderer.invoke('get-app-state'),
   getWindowSizeLimits: () => ipcRenderer.invoke('get-window-size-limits'),
   setWindowContentHeight: (contentHeight) => ipcRenderer.invoke('set-window-content-height', contentHeight),

@@ -416,6 +416,30 @@ ipcMain.handle('pick-directory', async (_, startPath) => {
   return result.filePaths[0];
 });
 
+ipcMain.handle('validate-directory-path', async (_, candidatePath) => {
+  if (typeof candidatePath !== 'string' || !candidatePath.trim()) {
+    return { ok: false, error: 'No dropped path provided.' };
+  }
+
+  const resolved = path.resolve(candidatePath);
+
+  try {
+    const stats = await fs.promises.stat(resolved);
+    if (!stats.isDirectory()) {
+      return { ok: false, error: 'Dropped item is not a directory.' };
+    }
+    return { ok: true, path: resolved };
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return { ok: false, error: 'Dropped directory no longer exists.' };
+    }
+    return {
+      ok: false,
+      error: error && error.message ? error.message : 'Could not access dropped directory.',
+    };
+  }
+});
+
 ipcMain.handle('get-app-state', async () => {
   return appState;
 });

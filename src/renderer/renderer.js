@@ -2,6 +2,8 @@ const leftPathInput = document.getElementById('leftPath');
 const rightPathInput = document.getElementById('rightPath');
 const pickLeftBtn = document.getElementById('pickLeft');
 const pickRightBtn = document.getElementById('pickRight');
+const leftPathDropTarget = leftPathInput.closest('.path-input-wrap');
+const rightPathDropTarget = rightPathInput.closest('.path-input-wrap');
 const compareBtn = document.getElementById('compareBtn');
 const syncBtn = document.getElementById('syncBtn');
 const pauseBtn = document.getElementById('pauseBtn');
@@ -499,6 +501,120 @@ async function pickDirectory(inputEl) {
   }
 }
 
+function hasFilePayload(event) {
+  const types = event && event.dataTransfer && event.dataTransfer.types
+    ? Array.from(event.dataTransfer.types)
+    : [];
+  return types.includes('Files');
+}
+
+function extractDroppedPath(event) {
+  const dataTransfer = event && event.dataTransfer;
+  if (!dataTransfer) {
+    return null;
+  }
+
+  const files = dataTransfer.files ? Array.from(dataTransfer.files) : [];
+  for (const file of files) {
+    if (file && typeof file.path === 'string' && file.path.trim()) {
+      return file.path.trim();
+    }
+  }
+
+  return null;
+}
+
+async function setDirectoryFromDrop(inputEl, droppedPath, label) {
+  const previous = inputEl.value.trim();
+
+  let validation;
+  try {
+    validation = await window.treeSync.validateDirectoryPath(droppedPath);
+  } catch (error) {
+    setPlainStatus(label + ' drop failed: ' + messageFromError(error, 'Unexpected validation error.'));
+    return;
+  }
+
+  if (!validation || !validation.ok) {
+    const reason = validation && validation.error ? validation.error : 'Dropped item must be a directory.';
+    setPlainStatus(label + ' drop rejected: ' + reason);
+    return;
+  }
+
+  inputEl.value = validation.path || droppedPath;
+  if (inputEl.value.trim() !== previous) {
+    invalidateCompareState('Directory changed. Run compare again.');
+  }
+
+  await saveSelectedDirectories();
+  setPlainStatus(label + ' directory set from drag and drop.');
+}
+
+function attachDirectoryDropHandlers(targetEl, inputEl, label) {
+  if (!targetEl) {
+    return;
+  }
+
+  let dragDepth = 0;
+
+  const clearDropState = () => {
+    dragDepth = 0;
+    targetEl.classList.remove('drop-active');
+  };
+
+  targetEl.addEventListener('dragenter', (event) => {
+    if (!hasFilePayload(event) || isBusy) {
+      return;
+    }
+    event.preventDefault();
+    dragDepth += 1;
+    targetEl.classList.add('drop-active');
+  });
+
+  targetEl.addEventListener('dragover', (event) => {
+    if (!hasFilePayload(event) || isBusy) {
+      return;
+    }
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'copy';
+    }
+    targetEl.classList.add('drop-active');
+  });
+
+  targetEl.addEventListener('dragleave', () => {
+    if (dragDepth > 0) {
+      dragDepth -= 1;
+    }
+    if (dragDepth <= 0) {
+      clearDropState();
+    }
+  });
+
+  targetEl.addEventListener('drop', async (event) => {
+    if (!hasFilePayload(event)) {
+      clearDropState();
+      return;
+    }
+
+    event.preventDefault();
+    clearDropState();
+
+    if (isBusy) {
+      setPlainStatus('Wait for the current operation to finish before changing directories.');
+      return;
+    }
+
+    const droppedPath = extractDroppedPath(event);
+    if (!droppedPath) {
+      setPlainStatus(label + ' drop rejected: no directory path found.');
+      return;
+    }
+
+    await setDirectoryFromDrop(inputEl, droppedPath, label);
+  });
+}
+
 async function saveSelectedDirectories() {
   try {
     const result = await window.treeSync.setSelectedDirectories(
@@ -583,6 +699,21 @@ leftPathInput.addEventListener('change', async () => {
 rightPathInput.addEventListener('change', async () => {
   invalidateCompareState('Directory changed. Run compare again.');
   await saveSelectedDirectories();
+});
+
+attachDirectoryDropHandlers(leftPathDropTarget, leftPathInput, 'Source');
+attachDirectoryDropHandlers(rightPathDropTarget, rightPathInput, 'Destination');
+
+document.addEventListener('dragover', (event) => {
+  if (hasFilePayload(event)) {
+    event.preventDefault();
+  }
+});
+
+document.addEventListener('drop', (event) => {
+  if (hasFilePayload(event)) {
+    event.preventDefault();
+  }
 });
 
 compareBtn.addEventListener('click', async () => {
